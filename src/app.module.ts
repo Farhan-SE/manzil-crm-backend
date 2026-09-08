@@ -9,6 +9,8 @@ import { InterestsModule } from './interests/interests.module.js';
 import { SourcesModule } from './sources/sources.module.js';
 import { CategoriesModule } from './categories/categories.module.js';
 import { FollowUpsModule } from './follow-ups/follow-ups.module.js';
+import { ListingsModule } from './listings/listings.module.js';
+import { PartnerProjectsModule } from './partner-projects/partner-projects.module.js';
 
 @Module({
   imports: [
@@ -27,6 +29,8 @@ import { FollowUpsModule } from './follow-ups/follow-ups.module.js';
     SourcesModule,
     CategoriesModule,
     FollowUpsModule,
+    ListingsModule,
+    PartnerProjectsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
