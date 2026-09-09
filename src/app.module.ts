@@ -11,6 +11,7 @@ import { CategoriesModule } from './categories/categories.module.js';
 import { FollowUpsModule } from './follow-ups/follow-ups.module.js';
 import { ListingsModule } from './listings/listings.module.js';
 import { PartnerProjectsModule } from './partner-projects/partner-projects.module.js';
+import { CustomerModule } from './customer/customer.module.js';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { PartnerProjectsModule } from './partner-projects/partner-projects.modul
     FollowUpsModule,
     ListingsModule,
     PartnerProjectsModule,
+    CustomerModule,
   ],
   controllers: [AppController],
   providers: [AppService],
