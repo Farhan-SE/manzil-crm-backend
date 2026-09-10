@@ -1,0 +1,16 @@
+node_modules
+dist
+test
+postman
+.git
+.gitignore
+.env
+.env.*
+*.tsbuildinfo
+npm-debug.log
+Dockerfile
+.dockerignore
+README.md
+CLAUDE.md
+vitest.config.ts
+vitest.config.e2e.ts
