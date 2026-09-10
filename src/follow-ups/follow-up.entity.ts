@@ -32,6 +32,9 @@ export class FollowUp {
     @Column({ type: 'boolean', default: false })
     completed: boolean;
 
+    @Column({ type: 'timestamptz', nullable: true })
+    completed_at: Date | null;
+
     @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL' })
     @JoinColumn({ name: 'created_by_id' })
     created_by: User | null;

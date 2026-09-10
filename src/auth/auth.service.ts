@@ -3,6 +3,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { User } from "./user.entity.js";
 import { LoginDto } from "./login.dto.js";
 import { AddUserDto } from "./add-user.dto.js";
+import { ChangePasswordDto } from "./change-password.dto.js";
 import { Repository } from "typeorm";
 import * as bcrypt from 'bcrypt';
 import { JwtService } from "@nestjs/jwt";
@@ -45,6 +46,7 @@ export class AuthService {
             email: user.email,
             user_role: user.user_role,
             blocked: user.blocked,
+            password_changed: user.password_changed,
             created_at: user.created_at,
             updated_at: user.updated_at,
         };
@@ -70,6 +72,8 @@ export class AuthService {
             role: user.user_role,
             first_name: user.first_name,
             last_name: user.last_name,
+            // Drives the first-login welcome flow — the client reads it straight off the token.
+            password_changed: user.password_changed,
         };
         return {
             access_token: this.jwtService.sign(payload),
@@ -95,6 +99,63 @@ export class AuthService {
         await this.userRepository.save(user);
 
         return { user: this.safeUser(user), password: plainPassword };
+    }
+
+    async changePassword(userId: number, dto: ChangePasswordDto) {
+        const user = await this.userRepository.findOne({ where: { id: userId } });
+        if (!user) throw new NotFoundException('User not found');
+
+        const isPasswordValid = await bcrypt.compare(dto.current_password, user.password);
+        if (!isPasswordValid) throw new BadRequestException('Current password is incorrect');
+
+        if (dto.current_password === dto.new_password) {
+            throw new BadRequestException('New password must be different from the current one');
+        }
+
+        user.password = await bcrypt.hash(dto.new_password, 10);
+        user.password_changed = true;
+        await this.userRepository.save(user);
+
+        return { status: 'Success', message: 'Password changed' };
+    }
+
+    async setBlocked(id: number, blocked: boolean, requesterId: number) {
+        // Without this an admin can lock themselves out of the only admin account.
+        if (id === requesterId) throw new BadRequestException('You cannot block your own account');
+
+        const user = await this.userRepository.findOne({ where: { id } });
+        if (!user) throw new NotFoundException('User not found');
+
+        user.blocked = blocked;
+        await this.userRepository.save(user);
+        return this.safeUser(user);
+    }
+
+    async setRole(id: number, userRole: string, requesterId: number) {
+        if (id === requesterId) throw new BadRequestException('You cannot change your own role');
+
+        const user = await this.userRepository.findOne({ where: { id } });
+        if (!user) throw new NotFoundException('User not found');
+
+        // Demoting the last admin would leave nobody able to administer the CRM.
+        if (user.user_role === 'admin' && userRole !== 'admin') {
+            const adminCount = await this.userRepository.count({
+                where: { user_role: 'admin', blocked: false },
+            });
+            if (adminCount <= 1) throw new BadRequestException('The last admin cannot be demoted');
+        }
+
+        user.user_role = userRole;
+        await this.userRepository.save(user);
+        return this.safeUser(user);
+    }
+
+    /** The whole team — admins included — for the team page. listAgents() stays assignment-only. */
+    async listUsers() {
+        const users = await this.userRepository.find({
+            order: { created_at: 'DESC' },
+        });
+        return users.map((user) => this.safeUser(user));
     }
 
     async listAgents() {
@@ -145,6 +206,7 @@ export class AuthService {
         }
 
         user.password = await bcrypt.hash(newPassword, 10);
+        user.password_changed = true;
         user.reset_token = null;
         user.reset_token_expires = null;
         await this.userRepository.save(user);

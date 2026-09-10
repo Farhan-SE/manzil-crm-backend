@@ -8,6 +8,7 @@ import {
     UpdateDateColumn,
 } from 'typeorm';
 import { User } from '../auth/user.entity.js';
+import { Source } from '../sources/source.entity.js';
 
 @Entity()
 export class Customers {
@@ -41,6 +42,11 @@ export class Customers {
 
     @Column({ type: 'uuid', nullable: true })
     source_id: string | null;
+
+    // Read-only join over source_id so responses carry the name, not just the id.
+    @ManyToOne(() => Source, { nullable: true, createForeignKeyConstraints: false })
+    @JoinColumn({ name: 'source_id' })
+    source: Source | null;
 
     @Column({type: 'date' , nullable: true})
     customer_since: Date | null;

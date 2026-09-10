@@ -1,4 +1,5 @@
 import {
+    BadRequestException,
     Body,
     Controller,
     Delete,
@@ -8,8 +9,12 @@ import {
     Patch,
     Post,
     Query,
+    UploadedFile,
     UseGuards,
+    UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import type { UploadedCsv } from '../common/csv.js';
 import { CustomerService } from './customer.service.js';
 import { CreateCustomerDto } from './create-customer.dto.js';
 import { UpdateCustomerDto } from './update-customer.dto.js';
@@ -27,6 +32,14 @@ export class CustomerController {
     @Post()
     create(@Body() dto: CreateCustomerDto) {
         return this.customerService.create(dto);
+    }
+
+    @UseGuards(AdminGuard)
+    @Post('import')
+    @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
+    importCsv(@UploadedFile() file: UploadedCsv) {
+        if (!file) throw new BadRequestException('No file uploaded');
+        return this.customerService.importCsv(file.buffer);
     }
 
     @Get()

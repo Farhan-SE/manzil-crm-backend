@@ -1,10 +1,8 @@
 import {
     Body,
     Controller,
-    DefaultValuePipe,
     Get,
     Param,
-    ParseIntPipe,
     ParseUUIDPipe,
     Patch,
     Post,
@@ -15,6 +13,7 @@ import { FollowUpsService } from './follow-ups.service.js';
 import { CreateFollowUpDto } from './create-follow-up.dto.js';
 import { UpdateFollowUpDto } from './update-follow-up.dto.js';
 import { CompleteFollowUpDto } from './complete-follow-up.dto.js';
+import { FindFollowUpsDto } from './find-follow-ups.dto.js';
 import { FindLeadsDto } from '../leads/find-leads.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
 import { AdminGuard } from '../strategies/admin.guard.js';
@@ -33,12 +32,8 @@ export class FollowUpsController {
     }
 
     @Get()
-    findAll(
-        @Query('lead_id') leadId: string | undefined,
-        @Query('limit', new DefaultValuePipe(5), ParseIntPipe) limit: number,
-        @UserSession() user: any,
-    ) {
-        return this.followUpsService.findAll({ lead_id: leadId || undefined, limit }, user);
+    findAll(@Query() query: FindFollowUpsDto, @UserSession() user: any) {
+        return this.followUpsService.findAll(query, user);
     }
 
     @Get('today')

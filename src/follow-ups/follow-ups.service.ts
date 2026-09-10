@@ -7,6 +7,7 @@ import { User } from '../auth/user.entity.js';
 import { CreateFollowUpDto } from './create-follow-up.dto.js';
 import { UpdateFollowUpDto } from './update-follow-up.dto.js';
 import { FindLeadsDto } from '../leads/find-leads.dto.js';
+import { FindFollowUpsDto } from './find-follow-ups.dto.js';
 
 type Requester = { userId: number; role: string };
 
@@ -33,24 +34,51 @@ export class FollowUpsService {
         await this.followUpRepository.save(followUp);
     }
 
-    async findAll(query: { lead_id?: string; limit: number }, requester: Requester) {
+    async findAll(query: FindFollowUpsDto, requester: Requester) {
         const qb = this.followUpRepository
             .createQueryBuilder('followUp')
             .leftJoinAndSelect('followUp.lead', 'lead')
-            .leftJoinAndSelect('lead.assigned_to', 'assignedTo')
-            .orderBy('followUp.due_date', 'ASC')
-            .addOrderBy('followUp.due_time', 'ASC');
+            .leftJoinAndSelect('lead.assigned_to', 'assignedTo');
 
         if (query.lead_id) {
-            qb.andWhere('lead.id = :leadId', { leadId: query.lead_id });
-        } else {
-            qb.andWhere('followUp.completed = false');
-            qb.andWhere('(followUp.due_date + followUp.due_time) >= NOW()');
-            if (requester.role !== 'admin') {
-                qb.andWhere('assignedTo.id = :userId', { userId: requester.userId });
-            }
-            qb.take(query.limit);
+            qb.andWhere('lead.id = :leadId', { leadId: query.lead_id })
+                .orderBy('followUp.due_date', 'ASC')
+                .addOrderBy('followUp.due_time', 'ASC');
+            const followUps = await qb.getMany();
+            return followUps.map((followUp) => this.serialize(followUp));
         }
+
+        if (query.status === 'completed') {
+            // Most recently ticked off first — NULLS LAST covers rows completed before completed_at existed.
+            qb.andWhere('followUp.completed = true')
+                .orderBy('followUp.completed_at', 'DESC', 'NULLS LAST')
+                .addOrderBy('followUp.due_date', 'DESC');
+        } else if (query.status === 'overdue') {
+            qb.andWhere('followUp.completed = false')
+                .andWhere('(followUp.due_date + followUp.due_time) < NOW()')
+                // Longest overdue first.
+                .orderBy('followUp.due_date', 'ASC')
+                .addOrderBy('followUp.due_time', 'ASC');
+        } else {
+            qb.andWhere('followUp.completed = false')
+                .andWhere('(followUp.due_date + followUp.due_time) >= NOW()')
+                .orderBy('followUp.due_date', 'ASC')
+                .addOrderBy('followUp.due_time', 'ASC');
+        }
+
+        if (requester.role !== 'admin') {
+            qb.andWhere('assignedTo.id = :userId', { userId: requester.userId });
+        } else if (query.assigned_to_id) {
+            qb.andWhere('assignedTo.id = :assignedToId', { assignedToId: query.assigned_to_id });
+        }
+
+        if (query.search) {
+            qb.andWhere('(followUp.text ILIKE :search OR lead.client_name ILIKE :search)', {
+                search: `%${query.search}%`,
+            });
+        }
+
+        qb.take(query.limit ?? 5);
 
         const followUps = await qb.getMany();
         return followUps.map((followUp) => this.serialize(followUp));
@@ -110,6 +138,7 @@ export class FollowUpsService {
         }
 
         followUp.completed = completed;
+        followUp.completed_at = completed ? new Date() : null;
         await this.followUpRepository.save(followUp);
     }
 
@@ -120,6 +149,11 @@ export class FollowUpsService {
             due_date: followUp.due_date,
             due_time: followUp.due_time,
             completed: followUp.completed,
+            completed_at: followUp.completed_at,
+            // Computed here so every caller agrees on what "overdue" means.
+            overdue:
+                !followUp.completed &&
+                new Date(`${followUp.due_date}T${followUp.due_time}`) < new Date(),
             lead: {
                 id: followUp.lead.id,
                 client_name: followUp.lead.client_name,

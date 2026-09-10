@@ -1,4 +1,5 @@
 import {
+    BadRequestException,
     Body,
     Controller,
     DefaultValuePipe,
@@ -10,8 +11,12 @@ import {
     Patch,
     Post,
     Query,
+    UploadedFile,
     UseGuards,
+    UseInterceptors,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import type { UploadedCsv } from '../common/csv.js';
 import { LeadsService } from './leads.service.js';
 import { CreateLeadDto } from './create-lead.dto.js';
 import { UpdateLeadDto } from './update-lead.dto.js';
@@ -28,6 +33,14 @@ export class LeadsController {
     @Post()
     create(@Body() dto: CreateLeadDto, @UserSession() user: any) {
         return this.leadsService.create(dto, user.userId);
+    }
+
+    @UseGuards(AdminGuard)
+    @Post('import')
+    @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
+    importCsv(@UploadedFile() file: UploadedCsv, @UserSession() user: any) {
+        if (!file) throw new BadRequestException('No file uploaded');
+        return this.leadsService.importCsv(file.buffer, user.userId);
     }
 
     @Get('active')

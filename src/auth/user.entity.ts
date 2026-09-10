@@ -24,6 +24,10 @@ export class User {
     @Column({ type: 'boolean', default: false })
     blocked: boolean;
 
+    /** False until the user replaces the generated password handed out at add-user time. */
+    @Column({ type: 'boolean', default: false })
+    password_changed: boolean;
+
     @Column({ type: 'text', nullable: true })
     reset_token: string | null;
 
