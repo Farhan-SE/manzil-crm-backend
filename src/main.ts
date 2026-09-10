@@ -2,9 +2,9 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module.js';
 import { ValidationPipe } from '@nestjs/common';
 
-/** Comma-separated allowlist, e.g. "https://app.manzil.com,http://localhost:3000". */
+
 function corsOrigin() {
-  const configured = (process.env.CORS_ORIGINS ?? process.env.FRONTEND_URL ?? '')
+  const configured = (process.env.CORS_ORIGINS ?? '')
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean);
