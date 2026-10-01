@@ -6,12 +6,13 @@ import { User } from '../auth/user.entity.js';
 import { Interest } from '../interests/interest.entity.js';
 import { Category } from '../categories/category.entity.js';
 import { Source } from '../sources/source.entity.js';
+import { Customers } from '../customer/customer.entity.js';
 import { LeadsService } from './leads.service.js';
 import { LeadsController } from './leads.controller.js';
 
 @Module({
     imports: [
-        TypeOrmModule.forFeature([Lead, User, Interest, Category, Source]),
+        TypeOrmModule.forFeature([Lead, User, Interest, Category, Source, Customers]),
         PassportModule.register({ defaultStrategy: 'jwt' }),
     ],
     providers: [LeadsService],

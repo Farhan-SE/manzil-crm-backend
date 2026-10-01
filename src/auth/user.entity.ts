@@ -21,6 +21,13 @@ export class User {
     @Column({ default: 'agent' })
     user_role: string;
 
+    @Column({ type: 'uuid', nullable: true })
+    team_id: string | null;
+
+    // A copy of the linked team's name, so lists can show it without a join. Kept in sync by the teams service.
+    @Column({ type: 'text', nullable: true })
+    team: string | null;
+
     @Column({ type: 'boolean', default: false })
     blocked: boolean;
 

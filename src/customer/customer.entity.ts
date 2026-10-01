@@ -6,15 +6,23 @@ import {
     JoinColumn,
     CreateDateColumn,
     UpdateDateColumn,
+    Generated,
 } from 'typeorm';
 import { User } from '../auth/user.entity.js';
 import { Source } from '../sources/source.entity.js';
+
+export const CUSTOMER_STAGES = ['inquiry', 'prospect', 'mature', 'pre_closure', 'sold'];
 
 @Entity()
 export class Customers {
 
     @PrimaryGeneratedColumn('uuid')
     id: string;
+
+    // The short, human-facing client ID. The uuid stays the key used in URLs and relations.
+    @Column({ type: 'int' })
+    @Generated('increment')
+    customer_no: number;
 
     @Column()
     customer_name: string;
@@ -47,6 +55,18 @@ export class Customers {
     @ManyToOne(() => Source, { nullable: true, createForeignKeyConstraints: false })
     @JoinColumn({ name: 'source_id' })
     source: Source | null;
+
+    @Column({ type: 'text', nullable: true })
+    sub_source: string | null;
+
+    @Column({ type: 'text', default: 'PK' })
+    country: string;
+
+    @Column({ type: 'text', default: 'inquiry' })
+    stage: string;
+
+    @Column({ type: 'boolean', default: false })
+    is_starred: boolean;
 
     @Column({type: 'date' , nullable: true})
     customer_since: Date | null;

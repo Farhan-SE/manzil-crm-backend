@@ -13,7 +13,7 @@ import {
 import { PartnerProjectsService } from './partner-projects.service.js';
 import { CreatePartnerProjectDto } from './create-partner-project.dto.js';
 import { UpdatePartnerProjectDto } from './update-partner-project.dto.js';
-import { FindPartnerProjectsDto } from './find-partner-projects.dto.js';
+import { FindPartnerProjectsDto, StarProjectDto } from './find-partner-projects.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
 import { AdminGuard } from '../strategies/admin.guard.js';
 import { UserSession } from '../strategies/user.decorator.js';
@@ -43,6 +43,12 @@ export class PartnerProjectsController {
     @Patch(':id')
     update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdatePartnerProjectDto) {
         return this.partnerProjectsService.update(id, dto);
+    }
+
+    // Open to every agent, like the list itself — a star is a shared marker, not an edit.
+    @Patch(':id/star')
+    setStarred(@Param('id', ParseUUIDPipe) id: string, @Body() dto: StarProjectDto) {
+        return this.partnerProjectsService.setStarred(id, dto.is_starred);
     }
 
     @UseGuards(AdminGuard)

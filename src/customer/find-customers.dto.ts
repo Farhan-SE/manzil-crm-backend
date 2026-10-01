@@ -1,5 +1,11 @@
 import { Type } from 'class-transformer';
-import { IsInt, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+import { CUSTOMER_STAGES } from './customer.entity.js';
+
+export class StarCustomerDto {
+    @IsBoolean()
+    is_starred: boolean;
+}
 
 export class FindCustomersDto {
     @IsOptional()
@@ -9,6 +15,15 @@ export class FindCustomersDto {
     @IsOptional()
     @IsString()
     relation_type?: string;
+
+    @IsOptional()
+    @IsIn(CUSTOMER_STAGES)
+    stage?: string;
+
+    /** Direction of the client ID ordering. */
+    @IsOptional()
+    @IsIn(['asc', 'desc'])
+    sort?: 'asc' | 'desc';
 
     @IsOptional()
     @IsUUID()

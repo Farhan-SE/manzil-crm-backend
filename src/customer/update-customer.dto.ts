@@ -1,4 +1,5 @@
-import { IsDateString, IsInt, IsOptional, IsString, IsUUID } from 'class-validator';
+import { IsDateString, IsIn, IsInt, IsOptional, IsString, IsUUID, Length } from 'class-validator';
+import { CUSTOMER_STAGES } from './customer.entity.js';
 
 export class UpdateCustomerDto {
     @IsOptional()
@@ -36,6 +37,19 @@ export class UpdateCustomerDto {
     @IsOptional()
     @IsUUID()
     source_id?: string;
+
+    @IsOptional()
+    @IsString()
+    sub_source?: string;
+
+    @IsOptional()
+    @IsString()
+    @Length(2, 2)
+    country?: string;
+
+    @IsOptional()
+    @IsIn(CUSTOMER_STAGES)
+    stage?: string;
 
     @IsOptional()
     @IsDateString()

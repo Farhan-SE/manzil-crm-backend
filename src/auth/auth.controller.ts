@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, UseGuards } from "@nestjs/common";
 import { AuthService } from './auth.service.js';
 import { LoginDto } from "./login.dto.js";
-import { AddUserDto } from "./add-user.dto.js";
+import { AddUserDto, SetTeamDto } from "./add-user.dto.js";
 import { ChangePasswordDto } from "./change-password.dto.js";
 import { BlockUserDto } from "./block-user.dto.js";
 import { ChangeRoleDto } from "./change-role.dto.js";
@@ -55,6 +55,12 @@ export class AuthController {
         @UserSession() user: any,
     ) {
         return this.authService.setRole(id, dto.user_role, user.userId);
+    }
+
+    @Patch('users/:id/team')
+    @UseGuards(JwtAuthGuard, AdminGuard)
+    async setTeam(@Param('id', ParseIntPipe) id: number, @Body() dto: SetTeamDto) {
+        return this.authService.setTeam(id, dto.team_id);
     }
 
     @Get('agents')

@@ -9,6 +9,8 @@ import {
 } from 'typeorm';
 import { User } from '../auth/user.entity.js';
 
+export const PROJECT_TYPES = ['exclusive', 'non_exclusive'];
+
 /** A developer's project the team markets — company-wide inventory, no private contact. */
 @Entity()
 export class PartnerProject {
@@ -39,6 +41,28 @@ export class PartnerProject {
 
     @Column({ type: 'text', nullable: true })
     description: string | null;
+
+    @Column({ type: 'text', default: 'exclusive' })
+    project_type: string;
+
+    @Column({ type: 'boolean', default: true })
+    is_active: boolean;
+
+    @Column({ type: 'boolean', default: false })
+    is_starred: boolean;
+
+    @Column({ type: 'text', nullable: true })
+    grade: string | null;
+
+    // Booking terms: a fixed token, then the partial and complete down payments as a % of the price.
+    @Column({ type: 'numeric', nullable: true })
+    token_amount: string | null;
+
+    @Column({ type: 'numeric', nullable: true })
+    pdp_percent: string | null;
+
+    @Column({ type: 'numeric', nullable: true })
+    cdp_percent: string | null;
 
     @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL' })
     @JoinColumn({ name: 'created_by_id' })

@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
 import { User } from "./user.entity.js";
+import { Team } from "../teams/team.entity.js";
 import { LoginDto } from "./login.dto.js";
 import { AddUserDto } from "./add-user.dto.js";
 import { ChangePasswordDto } from "./change-password.dto.js";
@@ -15,6 +16,8 @@ export class AuthService {
     constructor(
         @InjectRepository(User)
         private userRepository: Repository<User>,
+        @InjectRepository(Team)
+        private teamRepository: Repository<Team>,
         private jwtService: JwtService,
     ) { }
 
@@ -45,6 +48,8 @@ export class AuthService {
             last_name: user.last_name,
             email: user.email,
             user_role: user.user_role,
+            team_id: user.team_id,
+            team: user.team,
             blocked: user.blocked,
             password_changed: user.password_changed,
             created_at: user.created_at,
@@ -86,6 +91,8 @@ export class AuthService {
             throw new BadRequestException('A user with this email already exists');
         }
 
+        const team = dto.team_id ? await this.findTeam(dto.team_id) : null;
+
         const plainPassword = this.generatePassword();
         const hashedPassword = await bcrypt.hash(plainPassword, 10);
 
@@ -95,6 +102,8 @@ export class AuthService {
             email: dto.email,
             password: hashedPassword,
             user_role:dto.user_role,
+            team_id: team?.id ?? null,
+            team: team?.name ?? null,
         });
         await this.userRepository.save(user);
 
@@ -146,6 +155,23 @@ export class AuthService {
         }
 
         user.user_role = userRole;
+        await this.userRepository.save(user);
+        return this.safeUser(user);
+    }
+
+    private async findTeam(id: string) {
+        const team = await this.teamRepository.findOne({ where: { id } });
+        if (!team) throw new BadRequestException('team_id does not match an existing team');
+        return team;
+    }
+
+    async setTeam(id: number, teamId: string | null) {
+        const user = await this.userRepository.findOne({ where: { id } });
+        if (!user) throw new NotFoundException('User not found');
+
+        const team = teamId ? await this.findTeam(teamId) : null;
+        user.team_id = team?.id ?? null;
+        user.team = team?.name ?? null;
         await this.userRepository.save(user);
         return this.safeUser(user);
     }

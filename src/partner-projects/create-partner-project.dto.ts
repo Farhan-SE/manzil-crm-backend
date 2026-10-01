@@ -1,4 +1,5 @@
-import { IsNotEmpty, IsNumber, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+import { IsBoolean, IsIn, Max, IsNotEmpty, IsNumber, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+import { PROJECT_TYPES } from './partner-project.entity.js';
 
 export class CreatePartnerProjectDto {
     @IsNotEmpty()
@@ -32,4 +33,33 @@ export class CreatePartnerProjectDto {
     @IsOptional()
     @IsString()
     description?: string;
+
+    @IsOptional()
+    @IsIn(PROJECT_TYPES)
+    project_type?: string;
+
+    @IsOptional()
+    @IsBoolean()
+    is_active?: boolean;
+
+    @IsOptional()
+    @IsString()
+    grade?: string;
+
+    @IsOptional()
+    @IsNumber()
+    @Min(0)
+    token_amount?: number;
+
+    @IsOptional()
+    @IsNumber()
+    @Min(0)
+    @Max(100)
+    pdp_percent?: number;
+
+    @IsOptional()
+    @IsNumber()
+    @Min(0)
+    @Max(100)
+    cdp_percent?: number;
 }

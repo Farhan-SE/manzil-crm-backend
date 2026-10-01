@@ -1,11 +1,9 @@
-import { IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+import { IsInt, IsNumber, IsOptional, IsString, IsUUID, Min } from 'class-validator';
 
 export class CreateLeadDto {
-    @IsNotEmpty()
-    client_name: string;
-
-    @IsNotEmpty()
-    client_number: string;
+    /** The lead's client — name and number are taken from this customer. */
+    @IsUUID()
+    customer_id: string;
 
     @IsOptional()
     @IsUUID()
@@ -31,6 +29,10 @@ export class CreateLeadDto {
     @IsOptional()
     @IsUUID()
     source_id?: string;
+
+    @IsOptional()
+    @IsString()
+    sub_source?: string;
 
     @IsOptional()
     @IsString()

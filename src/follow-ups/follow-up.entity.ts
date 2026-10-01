@@ -23,6 +23,13 @@ export class FollowUp {
     @Column({ type: 'text' })
     text: string;
 
+    // Null on follow-ups written before tasks had a type, and on free-text ones.
+    @Column({ type: 'text', nullable: true })
+    task_type: string | null;
+
+    @Column({ type: 'text', nullable: true })
+    sub_task: string | null;
+
     @Column({ type: 'date' })
     due_date: string;
 

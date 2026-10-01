@@ -14,6 +14,7 @@ import { CreateFollowUpDto } from './create-follow-up.dto.js';
 import { UpdateFollowUpDto } from './update-follow-up.dto.js';
 import { CompleteFollowUpDto } from './complete-follow-up.dto.js';
 import { FindFollowUpsDto } from './find-follow-ups.dto.js';
+import { LogTaskDto, WeekLoadDto } from './log-task.dto.js';
 import { FindLeadsDto } from '../leads/find-leads.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
 import { AdminGuard } from '../strategies/admin.guard.js';
@@ -29,6 +30,18 @@ export class FollowUpsController {
     async create(@Body() dto: CreateFollowUpDto, @UserSession() user: any) {
         await this.followUpsService.create(dto, user.userId);
         return { message: 'Follow-up created successfully' };
+    }
+
+    // No AdminGuard: the service lets the lead's own agent through, admins for any lead.
+    @Post('log')
+    async logTask(@Body() dto: LogTaskDto, @UserSession() user: any) {
+        await this.followUpsService.logTask(dto, user);
+        return { message: 'Task added successfully' };
+    }
+
+    @Get('week-load')
+    weekLoad(@Query() query: WeekLoadDto, @UserSession() user: any) {
+        return this.followUpsService.weekLoad(query.from, user);
     }
 
     @Get()

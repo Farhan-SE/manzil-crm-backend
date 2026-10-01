@@ -11,6 +11,8 @@ import { CategoriesModule } from './categories/categories.module.js';
 import { FollowUpsModule } from './follow-ups/follow-ups.module.js';
 import { ListingsModule } from './listings/listings.module.js';
 import { PartnerProjectsModule } from './partner-projects/partner-projects.module.js';
+import { UnitsModule } from './units/units.module.js';
+import { TeamsModule } from './teams/teams.module.js';
 import { CustomerModule } from './customer/customer.module.js';
 import { StatsModule } from './stats/stats.module.js';
 
@@ -33,6 +35,8 @@ import { StatsModule } from './stats/stats.module.js';
     FollowUpsModule,
     ListingsModule,
     PartnerProjectsModule,
+    UnitsModule,
+    TeamsModule,
     CustomerModule,
     StatsModule,
   ],

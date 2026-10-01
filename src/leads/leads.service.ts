@@ -1,18 +1,28 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Between, ILike, In, LessThanOrEqual, MoreThanOrEqual, Not, Repository } from 'typeorm';
+import { Between, ILike, In, LessThanOrEqual, MoreThanOrEqual, Not, Raw, Repository } from 'typeorm';
 import { Lead } from './lead.entity.js';
 import { User } from '../auth/user.entity.js';
 import { CreateLeadDto } from './create-lead.dto.js';
 import { UpdateLeadDto } from './update-lead.dto.js';
-import { FindLeadsDto } from './find-leads.dto.js';
+import { FindLeadsDto, LEAD_TABS, type LeadTab } from './find-leads.dto.js';
 import { Interest } from '../interests/interest.entity.js';
 import { Category } from '../categories/category.entity.js';
 import { Source } from '../sources/source.entity.js';
+import { Customers } from '../customer/customer.entity.js';
 import { cell, parseCsvBuffer, type ImportResult } from '../common/csv.js';
 
 const TEMPERATURES = ['HOT', 'WARM', 'COLD'];
 const STAGES = ['inquiry', 'contacted', 'site_visit', 'negotiation', 'booked', 'sold', 'lost'];
+
+type LastTask = {
+    text: string;
+    task_type: string | null;
+    sub_task: string | null;
+    due_date: string;
+    completed: boolean;
+};
+type LeadExtras = { lastTasks: Map<string, LastTask>; clientLeadCounts: Map<string, number> };
 
 /** Accepted CSV header spellings, lowercased. Order within a list does not matter. */
 const LEAD_ALIASES = {
@@ -21,6 +31,7 @@ const LEAD_ALIASES = {
     interest: ['interest', 'looking for'],
     category: ['category', 'property type'],
     source: ['source', 'lead source'],
+    sub_source: ['sub source', 'sub-source'],
     city: ['city'],
     area: ['area', 'location'],
     budget: ['budget', 'price'],
@@ -41,6 +52,8 @@ export class LeadsService {
         private categoryRepository: Repository<Category>,
         @InjectRepository(Source)
         private sourceRepository: Repository<Source>,
+        @InjectRepository(Customers)
+        private customerRepository: Repository<Customers>,
     ) { }
 
     async create(dto: CreateLeadDto, createdById: number) {
@@ -50,15 +63,20 @@ export class LeadsService {
             if (!assignedTo) throw new BadRequestException('Assigning agent does not exist in the DB');
         }
 
+        const customer = await this.customerRepository.findOne({ where: { id: dto.customer_id } });
+        if (!customer) throw new BadRequestException('customer_id does not match an existing customer');
+
         const lead = this.leadRepository.create({
-            client_name: dto.client_name,
-            client_number: dto.client_number,
+            customer_id: customer.id,
+            client_name: customer.customer_name,
+            client_number: customer.contact_number,
             interest_id: dto.interest_id ?? null,
             category_id: dto.category_id ?? null,
             city: dto.city ?? null,
             area: dto.area ?? null,
             budget: dto.budget != null ? String(dto.budget) : null,
             source_id: dto.source_id ?? null,
+            sub_source: dto.sub_source ?? null,
             temperature: dto.temperature ?? 'WARM',
             assigned_to: assignedTo,
             created_by: { id: createdById } as User,
@@ -68,10 +86,32 @@ export class LeadsService {
     }
 
     async findAll(query: FindLeadsDto, requester: { userId: number; role: string }) {
-        const { search, stage, temperature, interest_id, category_id, source_id } = query;
         const page = query.page ?? 1;
         const limit = query.limit ?? 20;
         const skip = (page - 1) * limit;
+
+        const [[data, total], counts] = await Promise.all([
+            this.leadRepository.findAndCount({
+                where: this.buildWhere(query, requester, query.tab ?? 'all'),
+                relations: { assigned_to: true, created_by: true, interest: true, category: true, source: true, project: true, customer: true, unit: true },
+                order: { lead_no: query.sort === 'asc' ? 'ASC' : 'DESC' },
+                skip,
+                take: limit,
+            }),
+            // Counted per tab with the other filters applied, so the tabs match the search.
+            Promise.all(
+                LEAD_TABS.map((tab) =>
+                    this.leadRepository.count({ where: this.buildWhere(query, requester, tab) }),
+                ),
+            ),
+        ]);
+
+        const tab_counts = Object.fromEntries(LEAD_TABS.map((tab, i) => [tab, counts[i]]));
+        return { data: await this.serializeMany(data), total, page, limit, tab_counts };
+    }
+
+    private buildWhere(query: FindLeadsDto, requester: { userId: number; role: string }, tab: LeadTab) {
+        const { search, stage, temperature, interest_id, category_id, source_id } = query;
 
         const baseFilter: Record<string, unknown> = {};
         if (stage) baseFilter.stage = stage;
@@ -79,6 +119,11 @@ export class LeadsService {
         if (interest_id) baseFilter.interest_id = interest_id;
         if (category_id) baseFilter.category_id = category_id;
         if (source_id) baseFilter.source_id = source_id;
+
+        if (tab === 'watchlist') baseFilter.is_starred = true;
+        if (tab === 'new') {
+            baseFilter.id = Raw((alias) => `NOT EXISTS (SELECT 1 FROM "follow_up" f WHERE f.lead_id = ${alias})`);
+        }
 
         const budgetFilter = this.buildBudgetFilter(query.budget_min, query.budget_max);
         if (budgetFilter) baseFilter.budget = budgetFilter;
@@ -89,24 +134,17 @@ export class LeadsService {
             baseFilter.assigned_to = { id: requester.userId };
         }
 
-        const where = search
-            ? [
-                { ...baseFilter, client_name: ILike(`%${search}%`) },
-                { ...baseFilter, client_number: ILike(`%${search}%`) },
-                { ...baseFilter, city: ILike(`%${search}%`) },
-                { ...baseFilter, area: ILike(`%${search}%`) },
-            ]
-            : baseFilter;
+        if (!search) return baseFilter;
 
-        const [data, total] = await this.leadRepository.findAndCount({
-            where,
-            relations: { assigned_to: true, created_by: true, interest: true, category: true, source: true },
-            order: { created_at: 'DESC' },
-            skip,
-            take: limit,
-        });
-
-        return { data: data.map((lead) => this.serialize(lead)), total, page, limit };
+        const where: Record<string, unknown>[] = [
+            { ...baseFilter, client_name: ILike(`%${search}%`) },
+            { ...baseFilter, client_number: ILike(`%${search}%`) },
+            { ...baseFilter, city: ILike(`%${search}%`) },
+            { ...baseFilter, area: ILike(`%${search}%`) },
+        ];
+        // Capped at 9 digits so a phone number typed into search can't overflow the int column.
+        if (/^\d{1,9}$/.test(search)) where.push({ ...baseFilter, lead_no: Number(search) });
+        return where;
     }
 
     async findActive(limit: number, requester: { userId: number; role: string }) {
@@ -117,21 +155,32 @@ export class LeadsService {
 
         const leads = await this.leadRepository.find({
             where,
-            relations: { assigned_to: true, created_by: true, interest: true, category: true, source: true },
+            relations: { assigned_to: true, created_by: true, interest: true, category: true, source: true, project: true, customer: true, unit: true },
             order: { created_at: 'DESC' },
             take: limit,
         });
 
-        return leads.map((lead) => this.serialize(lead));
+        return this.serializeMany(leads);
     }
 
     async findOne(id: string) {
         const lead = await this.leadRepository.findOne({
             where: { id },
-            relations: { assigned_to: true, created_by: true, interest: true, category: true, source: true },
+            relations: { assigned_to: true, created_by: true, interest: true, category: true, source: true, project: true, customer: true, unit: true },
         });
         if (!lead) throw new NotFoundException('Lead not found');
-        return this.serialize(lead);
+        return (await this.serializeMany([lead]))[0];
+    }
+
+    async setStarred(id: string, isStarred: boolean, requester: { userId: number; role: string }) {
+        const lead = await this.leadRepository.findOne({ where: { id }, relations: { assigned_to: true } });
+        if (!lead) throw new NotFoundException('Lead not found');
+        if (requester.role !== 'admin' && lead.assigned_to?.id !== requester.userId) {
+            throw new ForbiddenException('You can only star leads assigned to you');
+        }
+
+        await this.leadRepository.update({ id }, { is_starred: isStarred });
+        return { id, is_starred: isStarred };
     }
 
     async update(id: string, dto: UpdateLeadDto, requester: { userId: number; role: string }) {
@@ -173,6 +222,7 @@ export class LeadsService {
         if (dto.area !== undefined) lead.area = dto.area;
         if (dto.budget !== undefined) lead.budget = String(dto.budget);
         if (dto.source_id !== undefined) lead.source_id = dto.source_id;
+        if (dto.sub_source !== undefined) lead.sub_source = dto.sub_source || null;
         if (dto.temperature !== undefined) lead.temperature = dto.temperature;
         if (dto.stage !== undefined) lead.stage = dto.stage;
 
@@ -183,6 +233,8 @@ export class LeadsService {
     async remove(id: string) {
         const lead = await this.leadRepository.findOne({ where: { id } });
         if (!lead) throw new NotFoundException('Lead not found');
+        // The unit keeps its status for an admin to review, but no longer points at a missing lead.
+        await this.leadRepository.manager.update('Unit', { lead_id: id }, { lead_id: null });
         await this.leadRepository.remove(lead);
     }
 
@@ -199,6 +251,16 @@ export class LeadsService {
         const sourceByName = new Map(sources.map((s) => [s.name.toLowerCase(), s.id]));
 
         const result: ImportResult = { total: rows.length, added: 0, skipped: 0, errors: [] };
+
+        // A spreadsheet has no customer id, so rows are linked to a customer that already has the number.
+        const customers = await this.customerRepository.find();
+        const customerIdByPhone = new Map<string, string>();
+        for (const customer of customers) {
+            for (const phone of [customer.contact_number, customer.alternate_contact_number]) {
+                const digits = phone?.replace(/\D/g, '');
+                if (digits) customerIdByPhone.set(digits, customer.id);
+            }
+        }
 
         for (const [index, row] of rows.entries()) {
             // +2 so the number matches the spreadsheet line the user sees (1 = header).
@@ -219,11 +281,13 @@ export class LeadsService {
             const rawBudget = cell(row, LEAD_ALIASES.budget).replace(/[^\d.]/g, '');
 
             const lead = this.leadRepository.create({
+                customer_id: customerIdByPhone.get(number.replace(/\D/g, '')) ?? null,
                 client_name: name,
                 client_number: number,
                 interest_id: interestByName.get(cell(row, LEAD_ALIASES.interest).toLowerCase()) ?? null,
                 category_id: categoryByName.get(cell(row, LEAD_ALIASES.category).toLowerCase()) ?? null,
                 source_id: sourceByName.get(cell(row, LEAD_ALIASES.source).toLowerCase()) ?? null,
+                sub_source: cell(row, LEAD_ALIASES.sub_source) || null,
                 city: cell(row, LEAD_ALIASES.city) || null,
                 area: cell(row, LEAD_ALIASES.area) || null,
                 budget: rawBudget ? rawBudget : null,
@@ -247,9 +311,70 @@ export class LeadsService {
         return null;
     }
 
-    private serialize(lead: Lead) {
+    /** Adds the per-row extras the list shows: the latest follow-up and how many leads the client has. */
+    private async serializeMany(leads: Lead[]) {
+        const extras: LeadExtras = { lastTasks: new Map(), clientLeadCounts: new Map() };
+        if (leads.length === 0) return [];
+
+        const customerIds = [...new Set(leads.map((lead) => lead.customer_id).filter((id) => id !== null))];
+        const [tasks, counts] = await Promise.all([
+            this.leadRepository.query(
+                // A completed task wins over a scheduled one: "last task" is what was last done.
+                `SELECT DISTINCT ON (f.lead_id)
+                        f.lead_id, f.text, f.task_type, f.sub_task, f.due_date::text AS due_date, f.completed
+                 FROM "follow_up" f
+                 WHERE f.lead_id = ANY($1::uuid[])
+                 ORDER BY f.lead_id, f.completed DESC, COALESCE(f.completed_at, f.created_at) DESC`,
+                [leads.map((lead) => lead.id)],
+            ) as Promise<({ lead_id: string } & LastTask)[]>,
+            customerIds.length === 0
+                ? []
+                : this.leadRepository
+                    .createQueryBuilder('lead')
+                    .select('lead.customer_id', 'customer_id')
+                    .addSelect('COUNT(*)', 'count')
+                    .where('lead.customer_id IN (:...customerIds)', { customerIds })
+                    .groupBy('lead.customer_id')
+                    .getRawMany<{ customer_id: string; count: string }>(),
+        ]);
+
+        for (const task of tasks) {
+            extras.lastTasks.set(task.lead_id, {
+                text: task.text,
+                task_type: task.task_type,
+                sub_task: task.sub_task,
+                due_date: task.due_date,
+                completed: task.completed,
+            });
+        }
+        for (const row of counts) extras.clientLeadCounts.set(row.customer_id, Number(row.count));
+
+        return leads.map((lead) => this.serialize(lead, extras));
+    }
+
+    private serialize(lead: Lead, extras: LeadExtras) {
         return {
             id: lead.id,
+            lead_no: lead.lead_no,
+            sub_source: lead.sub_source,
+            project_id: lead.project_id,
+            project: lead.project ? { id: lead.project.id, name: lead.project.project_name } : null,
+            unit_id: lead.unit_id,
+            unit: lead.unit
+                ? { id: lead.unit.id, unit_number: lead.unit.unit_number, status: lead.unit.status }
+                : null,
+            is_starred: lead.is_starred,
+            last_task: extras.lastTasks.get(lead.id) ?? null,
+            // An unlinked lead only knows about itself.
+            client_lead_count: (lead.customer_id && extras.clientLeadCounts.get(lead.customer_id)) || 1,
+            customer_id: lead.customer_id,
+            customer: lead.customer
+                ? {
+                    id: lead.customer.id,
+                    customer_no: lead.customer.customer_no,
+                    customer_name: lead.customer.customer_name,
+                }
+                : null,
             client_name: lead.client_name,
             client_number: lead.client_number,
             interest_id: lead.interest_id,
@@ -268,6 +393,7 @@ export class LeadsService {
                     id: lead.assigned_to.id,
                     first_name: lead.assigned_to.first_name,
                     last_name: lead.assigned_to.last_name,
+                    team: lead.assigned_to.team,
                 }
                 : null,
             created_by: lead.created_by

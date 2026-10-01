@@ -1,5 +1,10 @@
 import { Type } from 'class-transformer';
-import { IsInt, IsNumber, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsNumber, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+
+export class StarProjectDto {
+    @IsBoolean()
+    is_starred: boolean;
+}
 
 export class FindPartnerProjectsDto {
     @IsOptional()

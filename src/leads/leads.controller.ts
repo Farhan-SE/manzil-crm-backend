@@ -20,7 +20,7 @@ import type { UploadedCsv } from '../common/csv.js';
 import { LeadsService } from './leads.service.js';
 import { CreateLeadDto } from './create-lead.dto.js';
 import { UpdateLeadDto } from './update-lead.dto.js';
-import { FindLeadsDto } from './find-leads.dto.js';
+import { FindLeadsDto, StarLeadDto } from './find-leads.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
 import { AdminGuard } from '../strategies/admin.guard.js';
 import { UserSession } from '../strategies/user.decorator.js';
@@ -67,6 +67,11 @@ export class LeadsController {
         return this.leadsService.update(id, dto, user);
     }
     
+    @Patch(':id/star')
+    setStarred(@Param('id', ParseUUIDPipe) id: string, @Body() dto: StarLeadDto, @UserSession() user: any) {
+        return this.leadsService.setStarred(id, dto.is_starred, user);
+    }
+
     @UseGuards(AdminGuard)
     @Delete(':id')
      async remove(@Param('id', ParseUUIDPipe) id: string) {

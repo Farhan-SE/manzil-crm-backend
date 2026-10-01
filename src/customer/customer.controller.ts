@@ -18,7 +18,7 @@ import type { UploadedCsv } from '../common/csv.js';
 import { CustomerService } from './customer.service.js';
 import { CreateCustomerDto } from './create-customer.dto.js';
 import { UpdateCustomerDto } from './update-customer.dto.js';
-import { FindCustomersDto } from './find-customers.dto.js';
+import { FindCustomersDto, StarCustomerDto } from './find-customers.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
 import { AdminGuard } from '../strategies/admin.guard.js';
 import { UserSession } from '../strategies/user.decorator.js';
@@ -56,6 +56,12 @@ export class CustomerController {
     @Patch(':id')
     update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateCustomerDto, @UserSession() user: any) {
         return this.customerService.update(id, dto, user);
+    }
+
+    // Open to every agent, like the list itself — a star is a shared marker, not an edit.
+    @Patch(':id/star')
+    setStarred(@Param('id', ParseUUIDPipe) id: string, @Body() dto: StarCustomerDto) {
+        return this.customerService.setStarred(id, dto.is_starred);
     }
 
     @UseGuards(AdminGuard)

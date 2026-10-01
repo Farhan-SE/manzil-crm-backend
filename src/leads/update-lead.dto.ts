@@ -36,6 +36,10 @@ export class UpdateLeadDto {
 
     @IsOptional()
     @IsString()
+    sub_source?: string;
+
+    @IsOptional()
+    @IsString()
     temperature?: string;
 
     @IsOptional()
