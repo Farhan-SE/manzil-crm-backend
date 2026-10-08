@@ -12,6 +12,7 @@ import { User } from '../auth/user.entity.js';
 import { Source } from '../sources/source.entity.js';
 
 export const CUSTOMER_STAGES = ['inquiry', 'prospect', 'mature', 'pre_closure', 'sold'];
+export const GENDERS = ['male', 'female'];
 
 @Entity()
 export class Customers {
@@ -32,6 +33,9 @@ export class Customers {
 
     @Column()
     contact_number: string;
+
+    @Column({ type: 'text', nullable: true })
+    gender: string | null;
 
     @Column({ type: 'text', nullable: true })
     alternate_contact_number: string | null;

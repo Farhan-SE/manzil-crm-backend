@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+import { IsBoolean, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, IsUUID, Min } from 'class-validator';
 import { UNIT_STATUSES } from './unit.entity.js';
 
 export class CreateUnitDto {
@@ -100,6 +100,10 @@ export class FindUnitsDto {
     @IsIn(UNIT_STATUSES)
     status?: string;
 
+    @IsOptional()
+    @IsIn(['true', 'false'])
+    starred?: string;
+
     /** Direction of the date-created ordering. */
     @IsOptional()
     @IsIn(['asc', 'desc'])
@@ -116,6 +120,11 @@ export class FindUnitsDto {
     @IsInt()
     @Min(1)
     limit?: number;
+}
+
+export class StarUnitDto {
+    @IsBoolean()
+    is_starred: boolean;
 }
 
 export class ImportUnitsDto {

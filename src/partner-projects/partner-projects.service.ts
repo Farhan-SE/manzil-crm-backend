@@ -6,6 +6,7 @@ import { User } from '../auth/user.entity.js';
 import { CreatePartnerProjectDto } from './create-partner-project.dto.js';
 import { UpdatePartnerProjectDto } from './update-partner-project.dto.js';
 import { FindPartnerProjectsDto } from './find-partner-projects.dto.js';
+import { LocationsService } from '../locations/locations.service.js';
 
 type UnitStats = {
     unit_types: string[];
@@ -22,6 +23,7 @@ export class PartnerProjectsService {
     constructor(
         @InjectRepository(PartnerProject)
         private projectRepository: Repository<PartnerProject>,
+        private locationsService: LocationsService,
     ) { }
 
     async create(dto: CreatePartnerProjectDto, createdById: number) {
@@ -32,6 +34,7 @@ export class PartnerProjectsService {
             interest_id: dto.interest_id ?? null,
             city: dto.city ?? null,
             location: dto.location ?? null,
+            location_id: await this.locationsService.ensure(dto.location ?? null, dto.city ?? null),
             price: dto.price != null ? String(dto.price) : null,
             description: dto.description ?? null,
             project_type: dto.project_type ?? 'exclusive',
@@ -92,6 +95,9 @@ export class PartnerProjectsService {
         if (dto.interest_id !== undefined) project.interest_id = dto.interest_id;
         if (dto.city !== undefined) project.city = dto.city;
         if (dto.location !== undefined) project.location = dto.location;
+        if (dto.city !== undefined || dto.location !== undefined) {
+            project.location_id = await this.locationsService.ensure(project.location, project.city);
+        }
         if (dto.price !== undefined) project.price = String(dto.price);
         if (dto.description !== undefined) project.description = dto.description;
         if (dto.project_type !== undefined) project.project_type = dto.project_type;

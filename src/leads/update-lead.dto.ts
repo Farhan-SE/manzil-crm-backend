@@ -1,4 +1,5 @@
-import { IsInt, IsNumber, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+import { IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+import { LEAD_STAGES } from './lead.entity.js';
 
 export class UpdateLeadDto {
     @IsOptional()
@@ -43,7 +44,7 @@ export class UpdateLeadDto {
     temperature?: string;
 
     @IsOptional()
-    @IsString()
+    @IsIn(LEAD_STAGES)
     stage?: string;
 
     @IsOptional()

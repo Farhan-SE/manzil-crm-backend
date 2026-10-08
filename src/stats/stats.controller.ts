@@ -12,4 +12,14 @@ export class StatsController {
     dashboard(@UserSession() user: any) {
         return this.statsService.dashboard(user);
     }
+
+    @Get('recent-activity')
+    recentActivity(@UserSession() user: any) {
+        return this.statsService.recentActivity(user);
+    }
+
+    @Get('sales-performance')
+    salesPerformance(@UserSession() user: any) {
+        return this.statsService.salesPerformance(user);
+    }
 }

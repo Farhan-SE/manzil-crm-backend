@@ -30,6 +30,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
     if (user.blocked) throw new UnauthorizedException('Account blocked');
 
+    if (user.suspended) throw new UnauthorizedException('Account suspended');
+
     return {
       userId: user.id,
       email:  user.email,

@@ -101,6 +101,12 @@ export class UnitsService {
         return this.serialize(unit);
     }
 
+    async setStarred(id: string, isStarred: boolean) {
+        const result = await this.unitRepository.update({ id }, { is_starred: isStarred });
+        if (!result.affected) throw new NotFoundException('Unit not found');
+        return { id, is_starred: isStarred };
+    }
+
     async update(id: string, dto: UpdateUnitDto) {
         // project is deliberately not loaded — a loaded relation would win over project_id on save.
         const unit = await this.unitRepository.findOne({ where: { id } });
@@ -193,6 +199,7 @@ export class UnitsService {
         if (query.project_id) where.project_id = query.project_id;
         if (query.unit_type) where.unit_type = query.unit_type;
         if (query.search) where.unit_number = ILike(`%${query.search}%`);
+        if (query.starred === 'true') where.is_starred = true;
         return where;
     }
 
@@ -225,6 +232,7 @@ export class UnitsService {
             price: unit.price != null ? Number(unit.price) : null,
             area_sqft: unit.area_sqft != null ? Number(unit.area_sqft) : null,
             status: unit.status,
+            is_starred: unit.is_starred,
             lead: unit.lead
                 ? { id: unit.lead.id, lead_no: unit.lead.lead_no, client_name: unit.lead.client_name }
                 : null,

@@ -1,5 +1,5 @@
 import { Type } from 'class-transformer';
-import { IsBoolean, IsIn, IsInt, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+import { IsBoolean, IsDateString, IsIn, IsInt, IsOptional, IsString, IsUUID, Min } from 'class-validator';
 import { CUSTOMER_STAGES } from './customer.entity.js';
 
 export class StarCustomerDto {
@@ -7,10 +7,32 @@ export class StarCustomerDto {
     is_starred: boolean;
 }
 
+export const CUSTOMER_SEARCH_FIELDS = ['cell', 'name', 'client_id', 'cnic'] as const;
+export type CustomerSearchField = (typeof CUSTOMER_SEARCH_FIELDS)[number];
+
 export class FindCustomersDto {
     @IsOptional()
     @IsString()
     search?: string;
+
+    /** Limits `search` to one field. Without it every searchable field is matched. */
+    @IsOptional()
+    @IsIn(CUSTOMER_SEARCH_FIELDS)
+    search_by?: CustomerSearchField;
+
+    /** The day the client was added, as YYYY-MM-DD. */
+    @IsOptional()
+    @IsDateString()
+    created_date?: string;
+
+    /** Clients with at least one lead on this project. */
+    @IsOptional()
+    @IsUUID()
+    project_id?: string;
+
+    @IsOptional()
+    @IsIn(['true', 'false'])
+    starred?: string;
 
     @IsOptional()
     @IsString()

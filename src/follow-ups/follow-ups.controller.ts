@@ -14,6 +14,7 @@ import { CreateFollowUpDto } from './create-follow-up.dto.js';
 import { UpdateFollowUpDto } from './update-follow-up.dto.js';
 import { CompleteFollowUpDto } from './complete-follow-up.dto.js';
 import { FindFollowUpsDto } from './find-follow-ups.dto.js';
+import { FindTasksDto, FindTodosDto, SetTaskStatusDto, StarFollowUpDto } from './find-tasks.dto.js';
 import { LogTaskDto, WeekLoadDto } from './log-task.dto.js';
 import { FindLeadsDto } from '../leads/find-leads.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
@@ -54,6 +55,16 @@ export class FollowUpsController {
         return this.followUpsService.findToday(query, user);
     }
 
+    @Get('todos')
+    findTodos(@Query() query: FindTodosDto, @UserSession() user: any) {
+        return this.followUpsService.findTodos(query, user);
+    }
+
+    @Get('tasks')
+    findTasks(@Query() query: FindTasksDto, @UserSession() user: any) {
+        return this.followUpsService.findTasks(query, user);
+    }
+
     @UseGuards(AdminGuard)
     @Patch(':id')
     async update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateFollowUpDto) {
@@ -69,5 +80,20 @@ export class FollowUpsController {
     ) {
         await this.followUpsService.setCompleted(id, dto.completed, user);
         return { message: 'Follow-up updated successfully' };
+    }
+
+    @Patch(':id/status')
+    async setStatus(
+        @Param('id', ParseUUIDPipe) id: string,
+        @Body() dto: SetTaskStatusDto,
+        @UserSession() user: any,
+    ) {
+        await this.followUpsService.setStatus(id, dto.status, user);
+        return { message: 'Follow-up updated successfully' };
+    }
+
+    @Patch(':id/star')
+    setStarred(@Param('id', ParseUUIDPipe) id: string, @Body() dto: StarFollowUpDto, @UserSession() user: any) {
+        return this.followUpsService.setStarred(id, dto.is_starred, user);
     }
 }

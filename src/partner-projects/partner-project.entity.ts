@@ -36,6 +36,10 @@ export class PartnerProject {
     @Column({ type: 'text', nullable: true })
     location: string | null;
 
+    // The location row that `location` and `city` name. Kept in step by the projects service.
+    @Column({ type: 'uuid', nullable: true })
+    location_id: string | null;
+
     @Column({ type: 'numeric', nullable: true })
     price: string | null;
 
