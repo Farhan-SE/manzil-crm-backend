@@ -49,6 +49,11 @@ export class PartnerProjectsService {
         return this.findOne(project.id);
     }
 
+    /** Every project's id and name, for filter dropdowns. */
+    findOptions() {
+        return this.projectRepository.find({ select: { id: true, project_name: true }, order: { project_name: 'ASC' } });
+    }
+
     async findAll(query: FindPartnerProjectsDto) {
         const qb = this.projectRepository
             .createQueryBuilder('project')
