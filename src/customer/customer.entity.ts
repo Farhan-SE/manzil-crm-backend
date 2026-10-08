@@ -11,7 +11,7 @@ import {
 import { User } from '../auth/user.entity.js';
 import { Source } from '../sources/source.entity.js';
 
-export const CUSTOMER_STAGES = ['inquiry', 'prospect', 'mature', 'pre_closure', 'sold'];
+export const CUSTOMER_STAGES = ['inquiry', 'prospect', 'mature', 'pre_closure', 'sold', 'lost'];
 export const GENDERS = ['male', 'female'];
 
 @Entity()

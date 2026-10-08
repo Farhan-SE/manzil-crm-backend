@@ -260,6 +260,8 @@ export class FollowUpsService {
             const qb = this.listQuery().where('followUp.completed = false');
             this.applyTaskFilters(qb, query, requester);
             if (query.due_date) qb.andWhere('followUp.due_date = :dueDate', { dueDate: query.due_date });
+            if (query.due_before) qb.andWhere('followUp.due_date < :dueBefore', { dueBefore: query.due_before });
+            if (query.due_after) qb.andWhere('followUp.due_date > :dueAfter', { dueAfter: query.due_after });
             if (window !== 'all') qb.andWhere(windows[window]);
 
             if (query.search) {

@@ -7,7 +7,7 @@ import {
     Unique,
 } from 'typeorm';
 
-export const TARGET_METRICS = ['booked_sales', 'site_visits', 'collections'] as const;
+export const TARGET_METRICS = ['booked_sales', 'site_visits', 'collections', 'unit_sales'] as const;
 export type TargetMetric = (typeof TARGET_METRICS)[number];
 
 /** What the team aims to reach on one measure in one calendar month. */

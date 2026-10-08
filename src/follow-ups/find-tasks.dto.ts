@@ -62,6 +62,16 @@ export class FindTodosDto extends PagedTaskQuery {
     @IsOptional()
     @IsDateString()
     due_date?: string;
+
+    /** Only todos due before this day. */
+    @IsOptional()
+    @IsDateString()
+    due_before?: string;
+
+    /** Only todos due after this day. */
+    @IsOptional()
+    @IsDateString()
+    due_after?: string;
 }
 
 /** Every follow-up, open or done, grouped by status. */

@@ -157,6 +157,7 @@ const ACTUALS: Record<TargetMetric, string> = {
     booked_sales: `SELECT COALESCE(SUM(budget), 0) AS value FROM "lead" WHERE stage = 'sold' AND TO_CHAR(sold_at, 'YYYY-MM') = $1`,
     site_visits: `SELECT COUNT(*) AS value FROM "follow_up" WHERE completed AND task_type = 'site_visit' AND TO_CHAR(completed_at, 'YYYY-MM') = $1`,
     collections: `SELECT COALESCE(SUM(received_amount), 0) AS value FROM "payment" WHERE TO_CHAR(received_at, 'YYYY-MM') = $1`,
+    unit_sales: `SELECT COUNT(*) AS value FROM "lead" WHERE stage = 'sold' AND TO_CHAR(sold_at, 'YYYY-MM') = $1`,
 };
 
 function currentPeriod() {
