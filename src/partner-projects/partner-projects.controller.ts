@@ -34,6 +34,11 @@ export class PartnerProjectsController {
         return this.partnerProjectsService.findAll(query);
     }
 
+    @Get('options')
+    findOptions() {
+        return this.partnerProjectsService.findOptions();
+    }
+
     @Get(':id')
     findOne(@Param('id', ParseUUIDPipe) id: string) {
         return this.partnerProjectsService.findOne(id);
