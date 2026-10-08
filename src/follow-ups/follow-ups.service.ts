@@ -6,7 +6,7 @@ import {
     NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, type SelectQueryBuilder } from 'typeorm';
 import { FollowUp } from './follow-up.entity.js';
 import { Lead } from '../leads/lead.entity.js';
 import { User } from '../auth/user.entity.js';
@@ -14,11 +14,15 @@ import { CreateFollowUpDto } from './create-follow-up.dto.js';
 import { UpdateFollowUpDto } from './update-follow-up.dto.js';
 import { FindLeadsDto } from '../leads/find-leads.dto.js';
 import { FindFollowUpsDto } from './find-follow-ups.dto.js';
+import { FindTasksDto, FindTodosDto, TASK_TABS, TODO_WINDOWS, type TaskTab, type TodoWindow } from './find-tasks.dto.js';
+import { dueWindowSql } from './due-windows.js';
 import { LogTaskDto, NEXT_TASKS, PAYMENT_TASKS, TERMINAL_NEXT_TASKS } from './log-task.dto.js';
 import { Unit, UNIT_STATUSES } from '../units/unit.entity.js';
 import { PartnerProject } from '../partner-projects/partner-project.entity.js';
 
 type Requester = { userId: number; role: string };
+
+type LastTask = { text: string; task_type: string | null; sub_task: string | null; at: Date | null };
 
 @Injectable()
 export class FollowUpsService {
@@ -119,7 +123,7 @@ export class FollowUpsService {
                 temperature: dto.temperature,
                 project_id: dto.project_id ?? unit?.project_id ?? null,
                 unit_id: unit?.id ?? null,
-                ...(dto.next_task === 'closed_won' ? { stage: 'sold' } : {}),
+                ...(dto.next_task === 'closed_won' ? { stage: 'sold', sold_at: lead.sold_at ?? new Date() } : {}),
             });
         });
     }
@@ -144,10 +148,7 @@ export class FollowUpsService {
     }
 
     async findAll(query: FindFollowUpsDto, requester: Requester) {
-        const qb = this.followUpRepository
-            .createQueryBuilder('followUp')
-            .leftJoinAndSelect('followUp.lead', 'lead')
-            .leftJoinAndSelect('lead.assigned_to', 'assignedTo');
+        const qb = this.listQuery();
 
         if (query.lead_id) {
             qb.andWhere('lead.id = :leadId', { leadId: query.lead_id })
@@ -195,10 +196,7 @@ export class FollowUpsService {
 
     /** Everything due today — completed ones included, so the day's list stays a full record. */
     async findToday(query: FindLeadsDto, requester: Requester) {
-        const qb = this.followUpRepository
-            .createQueryBuilder('followUp')
-            .leftJoinAndSelect('followUp.lead', 'lead')
-            .leftJoinAndSelect('lead.assigned_to', 'assignedTo')
+        const qb = this.listQuery()
             .where('followUp.due_date = CURRENT_DATE')
             .orderBy('followUp.due_time', 'ASC');
 
@@ -232,6 +230,8 @@ export class FollowUpsService {
         if (dto.text !== undefined) followUp.text = dto.text;
         if (dto.due_date !== undefined) followUp.due_date = dto.due_date;
         if (dto.due_time !== undefined) followUp.due_time = dto.due_time;
+        // A rescheduled task is due again, so it earns a fresh reminder.
+        if (dto.due_date !== undefined || dto.due_time !== undefined) followUp.reminded_at = null;
         await this.followUpRepository.save(followUp);
     }
 
@@ -251,9 +251,181 @@ export class FollowUpsService {
         await this.followUpRepository.save(followUp);
     }
 
-    private serialize(followUp: FollowUp) {
+    /** Open follow-ups, paged, with a count for each due window under the same filters. */
+    async findTodos(query: FindTodosDto, requester: Requester) {
+        const page = query.page ?? 1;
+        const limit = query.limit ?? 10;
+        const windows = dueWindowSql('followUp');
+        const direction = query.sort === 'desc' ? 'DESC' : 'ASC';
+
+        const inWindow = (window: TodoWindow) => {
+            const qb = this.listQuery().where('followUp.completed = false');
+            this.applyTaskFilters(qb, query, requester);
+            if (query.due_date) qb.andWhere('followUp.due_date = :dueDate', { dueDate: query.due_date });
+            if (query.due_before) qb.andWhere('followUp.due_date < :dueBefore', { dueBefore: query.due_before });
+            if (query.due_after) qb.andWhere('followUp.due_date > :dueAfter', { dueAfter: query.due_after });
+            if (window !== 'all') qb.andWhere(windows[window]);
+
+            if (query.search) {
+                const search = `%${query.search}%`;
+                // Capped at 9 digits so a phone number typed into search can't overflow the int column.
+                const leadNo = /^\d{1,9}$/.test(query.search) ? Number(query.search) : -1;
+                if (query.search_by === 'lead_id') qb.andWhere('lead.lead_no = :leadNo', { leadNo });
+                else if (query.search_by === 'client') qb.andWhere('lead.client_name ILIKE :search', { search });
+                else if (query.search_by === 'todo') qb.andWhere('followUp.text ILIKE :search', { search });
+                else {
+                    qb.andWhere(
+                        '(followUp.text ILIKE :search OR lead.client_name ILIKE :search OR lead.lead_no = :leadNo)',
+                        { search, leadNo },
+                    );
+                }
+            }
+            return qb;
+        };
+
+        const [[rows, total], counts] = await Promise.all([
+            inWindow(query.window ?? 'all')
+                .orderBy('followUp.due_date', direction)
+                .addOrderBy('followUp.due_time', direction)
+                .skip((page - 1) * limit)
+                .take(limit)
+                .getManyAndCount(),
+            Promise.all(TODO_WINDOWS.map((window) => inWindow(window).getCount())),
+        ]);
+
+        const lastTasks = await this.lastCompletedTasks(rows.map((row) => row.lead.id));
+        const window_counts = Object.fromEntries(TODO_WINDOWS.map((window, i) => [window, counts[i]]));
+        return { data: rows.map((row) => this.serialize(row, lastTasks)), total, page, limit, window_counts };
+    }
+
+    /** Every follow-up, paged, with a count for each status tab under the same filters. */
+    async findTasks(query: FindTasksDto, requester: Requester) {
+        const page = query.page ?? 1;
+        const limit = query.limit ?? 10;
+        const late = dueWindowSql('followUp').overdue;
+        const tabSql: Record<Exclude<TaskTab, 'all'>, string> = {
+            completed: 'followUp.completed = true',
+            overdue: `followUp.completed = false AND ${late}`,
+            in_progress: `followUp.completed = false AND NOT (${late}) AND followUp.status = 'in_progress'`,
+            // A scheduled task has no tab of its own, so it is listed with the open ones.
+            open: `followUp.completed = false AND NOT (${late}) AND followUp.status <> 'in_progress'`,
+        };
+
+        const inTab = (tab: TaskTab) => {
+            const qb = this.listQuery();
+            this.applyTaskFilters(qb, query, requester);
+            if (query.due_from) qb.andWhere('followUp.due_date >= :dueFrom', { dueFrom: query.due_from });
+            if (query.due_to) qb.andWhere('followUp.due_date <= :dueTo', { dueTo: query.due_to });
+            if (tab !== 'all') qb.andWhere(tabSql[tab]);
+
+            if (query.search) {
+                // "TSK-1028", "tsk1028" and "1028" all find the task by its number.
+                const taskNo = /^(?:tsk-?)?(\d{1,9})$/i.exec(query.search.trim())?.[1];
+                qb.andWhere(
+                    '(followUp.text ILIKE :search OR lead.client_name ILIKE :search OR followUp.task_no = :taskNo)',
+                    { search: `%${query.search}%`, taskNo: taskNo ? Number(taskNo) : -1 },
+                );
+            }
+            return qb;
+        };
+
+        const [[rows, total], counts] = await Promise.all([
+            inTab(query.status ?? 'all')
+                .orderBy('followUp.task_no', query.sort === 'asc' ? 'ASC' : 'DESC')
+                .skip((page - 1) * limit)
+                .take(limit)
+                .getManyAndCount(),
+            Promise.all(TASK_TABS.map((tab) => inTab(tab).getCount())),
+        ]);
+
+        const status_counts = Object.fromEntries(TASK_TABS.map((tab, i) => [tab, counts[i]]));
+        return { data: rows.map((row) => this.serialize(row)), total, page, limit, status_counts };
+    }
+
+    /** `completed` ticks the task off; any other status reopens it at that stage. */
+    async setStatus(id: string, status: string, requester: Requester) {
+        const followUp = await this.findOwned(id, requester);
+        if (status === 'completed') {
+            followUp.completed = true;
+            followUp.completed_at = new Date();
+        } else {
+            followUp.completed = false;
+            followUp.completed_at = null;
+            followUp.status = status;
+        }
+        await this.followUpRepository.save(followUp);
+    }
+
+    async setStarred(id: string, isStarred: boolean, requester: Requester) {
+        const followUp = await this.findOwned(id, requester);
+        await this.followUpRepository.update({ id: followUp.id }, { is_starred: isStarred });
+        return { id, is_starred: isStarred };
+    }
+
+    /** Admins may touch any follow-up; an agent only the ones on leads assigned to them. */
+    private async findOwned(id: string, requester: Requester) {
+        const followUp = await this.followUpRepository.findOne({
+            where: { id },
+            relations: { lead: { assigned_to: true } },
+        });
+        if (!followUp) throw new NotFoundException('Follow-up not found');
+
+        if (requester.role !== 'admin' && followUp.lead.assigned_to?.id !== requester.userId) {
+            throw new ForbiddenException('You can only update follow-ups for leads assigned to you');
+        }
+        return followUp;
+    }
+
+    /** Every list joins the same lead details, so one serializer fits them all. */
+    private listQuery() {
+        return this.followUpRepository
+            .createQueryBuilder('followUp')
+            .leftJoinAndSelect('followUp.lead', 'lead')
+            .leftJoinAndSelect('lead.assigned_to', 'assignedTo')
+            .leftJoinAndSelect('lead.project', 'project')
+            .leftJoinAndSelect('lead.interest', 'interest')
+            .leftJoinAndSelect('lead.customer', 'customer');
+    }
+
+    private applyTaskFilters(
+        qb: SelectQueryBuilder<FollowUp>,
+        query: { assigned_to_id?: number; task_type?: string; starred?: string },
+        requester: Requester,
+    ) {
+        // An agent stays locked to their own leads whatever the query asks for.
+        if (requester.role !== 'admin') {
+            qb.andWhere('assignedTo.id = :userId', { userId: requester.userId });
+        } else if (query.assigned_to_id) {
+            qb.andWhere('assignedTo.id = :assignedToId', { assignedToId: query.assigned_to_id });
+        }
+        if (query.task_type) qb.andWhere('followUp.task_type = :taskType', { taskType: query.task_type });
+        if (query.starred === 'true') qb.andWhere('followUp.is_starred = true');
+    }
+
+    /** The most recently finished task on each lead — what a todo list shows as "last task". */
+    private async lastCompletedTasks(leadIds: string[]) {
+        const lastTasks = new Map<string, LastTask>();
+        if (leadIds.length === 0) return lastTasks;
+
+        const rows = (await this.followUpRepository.query(
+            `SELECT DISTINCT ON (f.lead_id) f.lead_id, f.text, f.task_type, f.sub_task, f.completed_at AS at
+             FROM "follow_up" f
+             WHERE f.lead_id = ANY($1::uuid[]) AND f.completed = true
+             ORDER BY f.lead_id, f.completed_at DESC NULLS LAST`,
+            [leadIds],
+        )) as ({ lead_id: string } & LastTask)[];
+
+        for (const { lead_id, ...task } of rows) lastTasks.set(lead_id, task);
+        return lastTasks;
+    }
+
+    private serialize(followUp: FollowUp, lastTasks?: Map<string, LastTask>) {
+        const lead = followUp.lead;
+        // Computed here so every caller agrees on what "overdue" means.
+        const overdue = !followUp.completed && new Date(`${followUp.due_date}T${followUp.due_time}`) < new Date();
         return {
             id: followUp.id,
+            task_no: followUp.task_no,
             text: followUp.text,
             task_type: followUp.task_type,
             sub_task: followUp.sub_task,
@@ -261,24 +433,32 @@ export class FollowUpsService {
             due_time: followUp.due_time,
             completed: followUp.completed,
             completed_at: followUp.completed_at,
-            // Computed here so every caller agrees on what "overdue" means.
-            overdue:
-                !followUp.completed &&
-                new Date(`${followUp.due_date}T${followUp.due_time}`) < new Date(),
+            overdue,
+            // What a list shows: done and late win over the stored status.
+            status: followUp.completed ? 'completed' : overdue ? 'overdue' : followUp.status,
+            priority: followUp.priority,
+            is_starred: followUp.is_starred,
+            last_task: lastTasks?.get(lead.id) ?? null,
             lead: {
-                id: followUp.lead.id,
-                client_name: followUp.lead.client_name,
-                client_number: followUp.lead.client_number,
-                stage: followUp.lead.stage,
-                city: followUp.lead.city,
-                area: followUp.lead.area,
-                assigned_to: followUp.lead.assigned_to
+                id: lead.id,
+                lead_no: lead.lead_no,
+                client_name: lead.client_name,
+                client_number: lead.client_number,
+                gender: lead.customer?.gender ?? null,
+                stage: lead.stage,
+                city: lead.city,
+                area: lead.area,
+                project: lead.project ? { id: lead.project.id, name: lead.project.project_name } : null,
+                interest: lead.interest ? { id: lead.interest.id, name: lead.interest.name } : null,
+                assigned_to: lead.assigned_to
                     ? {
-                        id: followUp.lead.assigned_to.id,
-                        first_name: followUp.lead.assigned_to.first_name,
-                        last_name: followUp.lead.assigned_to.last_name,
+                        id: lead.assigned_to.id,
+                        first_name: lead.assigned_to.first_name,
+                        last_name: lead.assigned_to.last_name,
+                        team: lead.assigned_to.team,
                     }
                     : null,
+                created_at: lead.created_at,
             },
             created_at: followUp.created_at,
             updated_at: followUp.updated_at,

@@ -1,10 +1,11 @@
-import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import { AuthService } from './auth.service.js';
 import { LoginDto } from "./login.dto.js";
 import { AddUserDto, SetTeamDto } from "./add-user.dto.js";
 import { ChangePasswordDto } from "./change-password.dto.js";
 import { BlockUserDto } from "./block-user.dto.js";
 import { ChangeRoleDto } from "./change-role.dto.js";
+import { FindStaffDto, StarUserDto, SuspendUserDto, UpdateStaffProfileDto } from "./staff.dto.js";
 import { JwtAuthGuard } from "../strategies/auth.guard.js";
 import { AdminGuard } from "../strategies/admin.guard.js";
 import { UserSession } from "../strategies/user.decorator.js";
@@ -29,6 +30,35 @@ export class AuthController {
     @UseGuards(JwtAuthGuard)
     async listUsers() {
         return this.authService.listUsers();
+    }
+
+    @Get('staff')
+    @UseGuards(JwtAuthGuard)
+    async listStaff(@Query() query: FindStaffDto) {
+        return this.authService.listStaff(query);
+    }
+
+    @Patch('users/:id/profile')
+    @UseGuards(JwtAuthGuard, AdminGuard)
+    async updateProfile(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateStaffProfileDto) {
+        return this.authService.updateProfile(id, dto);
+    }
+
+    @Patch('users/:id/suspend')
+    @UseGuards(JwtAuthGuard, AdminGuard)
+    async setSuspended(
+        @Param('id', ParseIntPipe) id: number,
+        @Body() dto: SuspendUserDto,
+        @UserSession() user: any,
+    ) {
+        return this.authService.setSuspended(id, dto.suspended, user.userId);
+    }
+
+    // Open to every member, like the list itself — a star is a shared marker, not an edit.
+    @Patch('users/:id/star')
+    @UseGuards(JwtAuthGuard)
+    async setStarred(@Param('id', ParseIntPipe) id: number, @Body() dto: StarUserDto) {
+        return this.authService.setStarred(id, dto.is_starred);
     }
 
     @Patch('change-password')

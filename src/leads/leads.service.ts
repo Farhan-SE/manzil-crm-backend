@@ -1,19 +1,21 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Between, ILike, In, LessThanOrEqual, MoreThanOrEqual, Not, Raw, Repository } from 'typeorm';
-import { Lead } from './lead.entity.js';
+import { Lead, LEAD_STAGES, PIPELINE_STAGES } from './lead.entity.js';
 import { User } from '../auth/user.entity.js';
 import { CreateLeadDto } from './create-lead.dto.js';
 import { UpdateLeadDto } from './update-lead.dto.js';
-import { FindLeadsDto, LEAD_TABS, type LeadTab } from './find-leads.dto.js';
+import { FindLeadsDto, FindPipelineDto, LEAD_TABS, type LeadTab } from './find-leads.dto.js';
 import { Interest } from '../interests/interest.entity.js';
 import { Category } from '../categories/category.entity.js';
 import { Source } from '../sources/source.entity.js';
 import { Customers } from '../customer/customer.entity.js';
 import { cell, parseCsvBuffer, type ImportResult } from '../common/csv.js';
+import { dueWindowSql } from '../follow-ups/due-windows.js';
 
 const TEMPERATURES = ['HOT', 'WARM', 'COLD'];
-const STAGES = ['inquiry', 'contacted', 'site_visit', 'negotiation', 'booked', 'sold', 'lost'];
+/** No longer in play — won or lost. */
+const SETTLED_STAGES = ['sold', 'lost'];
 
 type LastTask = {
     text: string;
@@ -21,6 +23,8 @@ type LastTask = {
     sub_task: string | null;
     due_date: string;
     completed: boolean;
+    /** When it was done, or logged if it is still open. */
+    at: Date;
 };
 type LeadExtras = { lastTasks: Map<string, LastTask>; clientLeadCounts: Map<string, number> };
 
@@ -120,9 +124,37 @@ export class LeadsService {
         if (category_id) baseFilter.category_id = category_id;
         if (source_id) baseFilter.source_id = source_id;
 
-        if (tab === 'watchlist') baseFilter.is_starred = true;
+        if (query.project_id) baseFilter.project_id = query.project_id;
+        if (tab === 'watchlist' || query.starred === 'true') baseFilter.is_starred = true;
+        if (tab === 'recommended') {
+            baseFilter.temperature = 'HOT';
+            if (!stage) baseFilter.stage = Not(In(SETTLED_STAGES));
+        }
+
+        // Each of these is a condition on the lead's follow-ups, so they share the one `id` slot.
+        const taskClauses: ((alias: string) => string)[] = [];
         if (tab === 'new') {
-            baseFilter.id = Raw((alias) => `NOT EXISTS (SELECT 1 FROM "follow_up" f WHERE f.lead_id = ${alias})`);
+            taskClauses.push((alias) => `NOT EXISTS (SELECT 1 FROM "follow_up" f WHERE f.lead_id = ${alias})`);
+        }
+        if (query.task_due) {
+            const due = dueWindowSql('f')[query.task_due];
+            taskClauses.push(
+                (alias) => `EXISTS (SELECT 1 FROM "follow_up" f WHERE f.lead_id = ${alias} AND f.completed = false AND ${due})`,
+            );
+        }
+        if (query.last_task) {
+            taskClauses.push(
+                // The alias must be followed by a space, or TypeORM leaves it unquoted.
+                (alias) =>
+                    `(SELECT f.task_type FROM "follow_up" f WHERE f.lead_id = ${alias} ` +
+                    'ORDER BY f.completed DESC, COALESCE(f.completed_at, f.created_at) DESC LIMIT 1) = :lastTask',
+            );
+        }
+        if (taskClauses.length > 0) {
+            baseFilter.id = Raw(
+                (alias) => taskClauses.map((clause) => clause(alias)).join(' AND '),
+                query.last_task ? { lastTask: query.last_task } : {},
+            );
         }
 
         const budgetFilter = this.buildBudgetFilter(query.budget_min, query.budget_max);
@@ -136,19 +168,111 @@ export class LeadsService {
 
         if (!search) return baseFilter;
 
+        // Capped at 9 digits so a phone number typed into search can't overflow the int column.
+        const searchNo = /^\d{1,9}$/.test(search) ? Number(search) : null;
+        // A lead ID that isn't a number can't match anything.
+        if (query.search_by === 'lead_id') return { ...baseFilter, lead_no: searchNo ?? -1 };
+        if (query.search_by === 'name') return { ...baseFilter, client_name: ILike(`%${search}%`) };
+        if (query.search_by === 'number') return { ...baseFilter, client_number: ILike(`%${search}%`) };
+
         const where: Record<string, unknown>[] = [
-            { ...baseFilter, client_name: ILike(`%${search}%`) },
-            { ...baseFilter, client_number: ILike(`%${search}%`) },
             { ...baseFilter, city: ILike(`%${search}%`) },
             { ...baseFilter, area: ILike(`%${search}%`) },
         ];
-        // Capped at 9 digits so a phone number typed into search can't overflow the int column.
-        if (/^\d{1,9}$/.test(search)) where.push({ ...baseFilter, lead_no: Number(search) });
+        if (query.search_by === 'city') return where;
+
+        where.push(
+            { ...baseFilter, client_name: ILike(`%${search}%`) },
+            { ...baseFilter, client_number: ILike(`%${search}%`) },
+        );
+        if (searchNo !== null) where.push({ ...baseFilter, lead_no: searchNo });
         return where;
     }
 
+    /** The board: per stage, how many deals and how much they are worth, plus the first few deals. */
+    async findPipeline(query: FindPipelineDto, requester: { userId: number; role: string }) {
+        const where: Record<string, unknown> = {};
+        if (query.project_id) where.project_id = query.project_id;
+        if (query.starred === 'true') where.is_starred = true;
+        if (query.period) {
+            // The space after the alias matters: TypeORM only quotes it when whitespace follows.
+            where.created_at = Raw((alias) => `TO_CHAR(${alias} , 'YYYY-MM') = :period`, { period: query.period });
+        }
+
+        const assignee: Record<string, unknown> = {};
+        if (query.assigned_to_id) assignee.id = query.assigned_to_id;
+        if (query.region) assignee.region = query.region;
+        // Applied last on purpose: an agent stays locked to their own leads whatever the query asks for.
+        if (requester.role !== 'admin' || query.mine === 'true') assignee.id = requester.userId;
+        if (Object.keys(assignee).length > 0) where.assigned_to = assignee;
+
+        const relations = { assigned_to: true, created_by: true, interest: true, category: true, source: true, project: true, customer: true, unit: true };
+        const order: Record<string, 'ASC' | 'DESC' | { direction: 'DESC'; nulls: 'LAST' }> =
+            query.sort === 'value' ? { budget: { direction: 'DESC', nulls: 'LAST' }, lead_no: 'DESC' } : { lead_no: 'DESC' };
+
+        const [totals, deals, regions] = await Promise.all([
+            this.leadRepository.find({
+                where: { ...where, stage: In([...PIPELINE_STAGES]) },
+                select: { id: true, stage: true, budget: true },
+            }),
+            Promise.all(
+                PIPELINE_STAGES.map((stage) =>
+                    this.leadRepository.find({ where: { ...where, stage }, relations, order, take: query.per_stage ?? 3 }),
+                ),
+            ),
+            this.userRepository
+                .createQueryBuilder('user')
+                .select('DISTINCT user.region', 'region')
+                .where('user.region IS NOT NULL')
+                .orderBy('region', 'ASC')
+                .getRawMany<{ region: string }>(),
+        ]);
+
+        const serialized = await this.serializeMany(deals.flat());
+        const nextTasks = await this.nextOpenTasks(serialized.map((lead) => lead.id));
+
+        const stages = PIPELINE_STAGES.map((stage) => {
+            const inStage = totals.filter((lead) => lead.stage === stage);
+            return {
+                id: stage,
+                count: inStage.length,
+                total: inStage.reduce((sum, lead) => sum + Number(lead.budget ?? 0), 0),
+                leads: serialized
+                    .filter((lead) => lead.stage === stage)
+                    .map((lead) => ({ ...lead, next_task: nextTasks.get(lead.id) ?? null })),
+            };
+        });
+        const active = stages.filter((stage) => stage.id !== 'sold');
+
+        return {
+            stages,
+            active_count: active.reduce((sum, stage) => sum + stage.count, 0),
+            active_value: active.reduce((sum, stage) => sum + stage.total, 0),
+            regions: regions.map((row) => row.region),
+        };
+    }
+
+    /** The soonest unfinished task on each lead — the board's "next step". */
+    private async nextOpenTasks(leadIds: string[]) {
+        type NextTask = { text: string; task_type: string | null; due_date: string; due_time: string };
+        const nextTasks = new Map<string, NextTask>();
+        if (leadIds.length === 0) return nextTasks;
+
+        const rows = (await this.leadRepository.query(
+            `SELECT DISTINCT ON (f.lead_id)
+                    f.lead_id, f.text, f.task_type, f.due_date::text AS due_date, f.due_time::text AS due_time
+             FROM "follow_up" f
+             WHERE f.lead_id = ANY($1::uuid[]) AND f.completed = false
+             ORDER BY f.lead_id, f.due_date, f.due_time`,
+            [leadIds],
+        )) as ({ lead_id: string } & NextTask)[];
+
+        for (const { lead_id, ...task } of rows) nextTasks.set(lead_id, task);
+        return nextTasks;
+    }
+
     async findActive(limit: number, requester: { userId: number; role: string }) {
-        const where: Record<string, unknown> = { stage: Not(In(['sold', 'lost'])) };
+        const where: Record<string, unknown> = { stage: Not(In(SETTLED_STAGES)) };
         if (requester.role !== 'admin') {
             where.assigned_to = { id: requester.userId };
         }
@@ -224,7 +348,10 @@ export class LeadsService {
         if (dto.source_id !== undefined) lead.source_id = dto.source_id;
         if (dto.sub_source !== undefined) lead.sub_source = dto.sub_source || null;
         if (dto.temperature !== undefined) lead.temperature = dto.temperature;
-        if (dto.stage !== undefined) lead.stage = dto.stage;
+        if (dto.stage !== undefined && dto.stage !== lead.stage) {
+            lead.sold_at = dto.stage === 'sold' ? new Date() : null;
+            lead.stage = dto.stage;
+        }
 
         await this.leadRepository.save(lead);
         return this.findOne(id);
@@ -292,7 +419,7 @@ export class LeadsService {
                 area: cell(row, LEAD_ALIASES.area) || null,
                 budget: rawBudget ? rawBudget : null,
                 temperature: TEMPERATURES.includes(rawTemp) ? rawTemp : 'WARM',
-                stage: STAGES.includes(rawStage) ? rawStage : 'inquiry',
+                stage: LEAD_STAGES.includes(rawStage) ? rawStage : 'inquiry',
                 assigned_to: null,
                 created_by: { id: createdById } as User,
             });
@@ -321,7 +448,8 @@ export class LeadsService {
             this.leadRepository.query(
                 // A completed task wins over a scheduled one: "last task" is what was last done.
                 `SELECT DISTINCT ON (f.lead_id)
-                        f.lead_id, f.text, f.task_type, f.sub_task, f.due_date::text AS due_date, f.completed
+                        f.lead_id, f.text, f.task_type, f.sub_task, f.due_date::text AS due_date, f.completed,
+                        COALESCE(f.completed_at, f.created_at) AS at
                  FROM "follow_up" f
                  WHERE f.lead_id = ANY($1::uuid[])
                  ORDER BY f.lead_id, f.completed DESC, COALESCE(f.completed_at, f.created_at) DESC`,
@@ -345,6 +473,7 @@ export class LeadsService {
                 sub_task: task.sub_task,
                 due_date: task.due_date,
                 completed: task.completed,
+                at: task.at,
             });
         }
         for (const row of counts) extras.clientLeadCounts.set(row.customer_id, Number(row.count));
@@ -373,6 +502,7 @@ export class LeadsService {
                     id: lead.customer.id,
                     customer_no: lead.customer.customer_no,
                     customer_name: lead.customer.customer_name,
+                    gender: lead.customer.gender,
                 }
                 : null,
             client_name: lead.client_name,
@@ -388,6 +518,7 @@ export class LeadsService {
             source: lead.source ? { id: lead.source.id, name: lead.source.name } : null,
             temperature: lead.temperature,
             stage: lead.stage,
+            sold_at: lead.sold_at,
             assigned_to: lead.assigned_to
                 ? {
                     id: lead.assigned_to.id,

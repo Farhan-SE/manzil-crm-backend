@@ -16,7 +16,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { UploadedCsv } from '../common/csv.js';
 import { UnitsService } from './units.service.js';
-import { CreateUnitDto, FindUnitsDto, ImportUnitsDto, UpdateUnitDto } from './unit.dto.js';
+import { CreateUnitDto, FindUnitsDto, ImportUnitsDto, StarUnitDto, UpdateUnitDto } from './unit.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
 import { AdminGuard } from '../strategies/admin.guard.js';
 import { UserSession } from '../strategies/user.decorator.js';
@@ -54,6 +54,12 @@ export class UnitsController {
     @Patch(':id')
     update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateUnitDto) {
         return this.unitsService.update(id, dto);
+    }
+
+    // Open to every agent, like the list itself — a star is a shared marker, not an edit.
+    @Patch(':id/star')
+    setStarred(@Param('id', ParseUUIDPipe) id: string, @Body() dto: StarUnitDto) {
+        return this.unitsService.setStarred(id, dto.is_starred);
     }
 
     @UseGuards(AdminGuard)

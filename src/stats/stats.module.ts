@@ -5,6 +5,7 @@ import { Lead } from '../leads/lead.entity.js';
 import { FollowUp } from '../follow-ups/follow-up.entity.js';
 import { Customers } from '../customer/customer.entity.js';
 import { StatsService } from './stats.service.js';
+import { PerformanceService } from './performance.service.js';
 import { StatsController } from './stats.controller.js';
 
 @Module({
@@ -12,7 +13,7 @@ import { StatsController } from './stats.controller.js';
         TypeOrmModule.forFeature([Lead, FollowUp, Customers]),
         PassportModule.register({ defaultStrategy: 'jwt' }),
     ],
-    providers: [StatsService],
+    providers: [StatsService, PerformanceService],
     controllers: [StatsController],
 })
 export class StatsModule { }

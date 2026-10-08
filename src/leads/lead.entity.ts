@@ -15,6 +15,11 @@ import { Source } from '../sources/source.entity.js';
 import { PartnerProject } from '../partner-projects/partner-project.entity.js';
 import { Customers } from '../customer/customer.entity.js';
 
+/** The pipeline, in order. A lost lead has left it, so `lost` has no board column. */
+export const PIPELINE_STAGES = ['inquiry', 'prospect', 'mature', 'pre_closure', 'sold'] as const;
+export type PipelineStage = (typeof PIPELINE_STAGES)[number];
+export const LEAD_STAGES = [...PIPELINE_STAGES, 'lost'];
+
 @Entity()
 export class Lead {
 
@@ -99,6 +104,10 @@ export class Lead {
 
     @Column({ default: 'inquiry' })
     stage: string;
+
+    // When the stage became 'sold'. Cleared if the lead is moved back out of it.
+    @Column({ type: 'timestamptz', nullable: true })
+    sold_at: Date | null;
 
     @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL' })
     @JoinColumn({ name: 'assigned_to_id' })

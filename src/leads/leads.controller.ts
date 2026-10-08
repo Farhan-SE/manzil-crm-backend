@@ -20,7 +20,7 @@ import type { UploadedCsv } from '../common/csv.js';
 import { LeadsService } from './leads.service.js';
 import { CreateLeadDto } from './create-lead.dto.js';
 import { UpdateLeadDto } from './update-lead.dto.js';
-import { FindLeadsDto, StarLeadDto } from './find-leads.dto.js';
+import { FindLeadsDto, FindPipelineDto, StarLeadDto } from './find-leads.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
 import { AdminGuard } from '../strategies/admin.guard.js';
 import { UserSession } from '../strategies/user.decorator.js';
@@ -49,6 +49,11 @@ export class LeadsController {
         @UserSession() user: any,
     ) {
         return this.leadsService.findActive(limit, user);
+    }
+
+    @Get('pipeline')
+    findPipeline(@Query() query: FindPipelineDto, @UserSession() user: any) {
+        return this.leadsService.findPipeline(query, user);
     }
 
     @Get()

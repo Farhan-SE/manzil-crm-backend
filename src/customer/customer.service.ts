@@ -6,7 +6,7 @@ import {
     NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ILike, Repository } from 'typeorm';
+import { ILike, Raw, Repository } from 'typeorm';
 import { CUSTOMER_STAGES, Customers } from './customer.entity.js';
 import { Lead } from '../leads/lead.entity.js';
 import { User } from '../auth/user.entity.js';
@@ -65,6 +65,7 @@ export class CustomerService {
             customer_name: dto.customer_name,
             cnic_number: dto.cnic_number,
             contact_number: dto.contact_number,
+            gender: dto.gender ?? null,
             alternate_contact_number: dto.alternate_contact_number ?? null,
             email: dto.email ?? null,
             address: dto.address ?? null,
@@ -167,6 +168,7 @@ export class CustomerService {
         if (dto.customer_name !== undefined) customer.customer_name = dto.customer_name;
         if (dto.cnic_number !== undefined) customer.cnic_number = dto.cnic_number;
         if (dto.contact_number !== undefined) customer.contact_number = dto.contact_number;
+        if (dto.gender !== undefined) customer.gender = dto.gender;
         if (dto.alternate_contact_number !== undefined) customer.alternate_contact_number = dto.alternate_contact_number;
         if (dto.email !== undefined) customer.email = dto.email;
         if (dto.address !== undefined) customer.address = dto.address;
@@ -260,8 +262,29 @@ export class CustomerService {
         if (source_id) baseFilter.source_id = source_id;
         if (city) baseFilter.city = ILike(`%${city}%`);
         if (query.assigned_to_id) baseFilter.assigned_to = { id: query.assigned_to_id };
+        if (query.starred === 'true') baseFilter.is_starred = true;
+        if (query.created_date) {
+            // CAST, not `::date`: TypeORM only quotes the alias when whitespace follows it.
+            baseFilter.created_at = Raw((alias) => `CAST(${alias} AS date) = :createdDate`, {
+                createdDate: query.created_date,
+            });
+        }
+        if (query.project_id) {
+            baseFilter.id = Raw(
+                (alias) => `EXISTS (SELECT 1 FROM "lead" l WHERE l.customer_id = ${alias} AND l.project_id = :projectId)`,
+                { projectId: query.project_id },
+            );
+        }
 
         if (!search) return baseFilter;
+
+        // Capped at 9 digits so a phone number typed into search can't overflow the int column.
+        const searchNo = /^\d{1,9}$/.test(search) ? Number(search) : null;
+        if (query.search_by === 'cell') return { ...baseFilter, contact_number: ILike(`%${search}%`) };
+        if (query.search_by === 'name') return { ...baseFilter, customer_name: ILike(`%${search}%`) };
+        if (query.search_by === 'cnic') return { ...baseFilter, cnic_number: ILike(`%${search}%`) };
+        // A client ID that isn't a number can't match anything.
+        if (query.search_by === 'client_id') return { ...baseFilter, customer_no: searchNo ?? -1 };
 
         const where: Record<string, unknown>[] = [
             { ...baseFilter, customer_name: ILike(`%${search}%`) },
@@ -270,8 +293,7 @@ export class CustomerService {
             { ...baseFilter, email: ILike(`%${search}%`) },
             { ...baseFilter, city: ILike(`%${search}%`) },
         ];
-        // Capped at 9 digits so a phone number typed into search can't overflow the int column.
-        if (/^\d{1,9}$/.test(search)) where.push({ ...baseFilter, customer_no: Number(search) });
+        if (searchNo !== null) where.push({ ...baseFilter, customer_no: searchNo });
         return where;
     }
 
@@ -322,6 +344,7 @@ export class CustomerService {
             customer_name: customer.customer_name,
             cnic_number: customer.cnic_number,
             contact_number: customer.contact_number,
+            gender: customer.gender,
             alternate_contact_number: customer.alternate_contact_number,
             email: customer.email,
             address: customer.address,

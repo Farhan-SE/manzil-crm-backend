@@ -4,8 +4,9 @@ import { User } from "./user.entity.js";
 import { Team } from "../teams/team.entity.js";
 import { LoginDto } from "./login.dto.js";
 import { AddUserDto } from "./add-user.dto.js";
+import { FindStaffDto, STAFF_TABS, UpdateStaffProfileDto, type StaffTab } from "./staff.dto.js";
 import { ChangePasswordDto } from "./change-password.dto.js";
-import { Repository } from "typeorm";
+import { In, Repository } from "typeorm";
 import * as bcrypt from 'bcrypt';
 import { JwtService } from "@nestjs/jwt";
 import * as crypto from 'crypto';
@@ -50,7 +51,15 @@ export class AuthService {
             user_role: user.user_role,
             team_id: user.team_id,
             team: user.team,
+            designation: user.designation,
+            department: user.department,
+            region: user.region,
+            office: user.office,
+            manager_id: user.manager_id,
+            joined_on: user.joined_on,
             blocked: user.blocked,
+            suspended: user.suspended,
+            is_starred: user.is_starred,
             password_changed: user.password_changed,
             created_at: user.created_at,
             updated_at: user.updated_at,
@@ -70,6 +79,9 @@ export class AuthService {
         }
         if (user.blocked) {
             throw new ForbiddenException('Your account has been blocked please contact your admin.');
+        }
+        if (user.suspended) {
+            throw new ForbiddenException('Your account has been suspended please contact your admin.');
         }
         const payload = {
             id: user.id,
@@ -159,6 +171,153 @@ export class AuthService {
         return this.safeUser(user);
     }
 
+    async setSuspended(id: number, suspended: boolean, requesterId: number) {
+        if (id === requesterId) throw new BadRequestException('You cannot suspend your own account');
+
+        const user = await this.userRepository.findOne({ where: { id } });
+        if (!user) throw new NotFoundException('User not found');
+
+        user.suspended = suspended;
+        await this.userRepository.save(user);
+        return this.safeUser(user);
+    }
+
+    async setStarred(id: number, isStarred: boolean) {
+        const result = await this.userRepository.update({ id }, { is_starred: isStarred });
+        if (!result.affected) throw new NotFoundException('User not found');
+        return { id, is_starred: isStarred };
+    }
+
+    async updateProfile(id: number, dto: UpdateStaffProfileDto) {
+        const user = await this.userRepository.findOne({ where: { id } });
+        if (!user) throw new NotFoundException('User not found');
+
+        if (dto.manager_id != null) {
+            if (dto.manager_id === id) throw new BadRequestException('A member cannot be their own line manager');
+            const manager = await this.userRepository.findOne({ where: { id: dto.manager_id } });
+            if (!manager) throw new BadRequestException('manager_id does not match an existing user');
+        }
+
+        if (dto.designation !== undefined) user.designation = dto.designation.trim() || null;
+        if (dto.department !== undefined) user.department = dto.department.trim() || null;
+        if (dto.region !== undefined) user.region = dto.region.trim() || null;
+        if (dto.office !== undefined) user.office = dto.office.trim() || null;
+        if (dto.manager_id !== undefined) user.manager_id = dto.manager_id;
+        if (dto.joined_on !== undefined) user.joined_on = dto.joined_on;
+
+        await this.userRepository.save(user);
+        return this.safeUser(user);
+    }
+
+    /** The staff register: paged, with a count per status tab and each member's lead and project load. */
+    async listStaff(query: FindStaffDto) {
+        const page = query.page ?? 1;
+        const limit = query.limit ?? 10;
+        const tabSql: Record<StaffTab, string> = {
+            active: 'user.blocked = false AND user.suspended = false',
+            suspended: 'user.blocked = false AND user.suspended = true',
+            blocked: 'user.blocked = true',
+        };
+
+        const inTab = (tab: StaffTab) => {
+            const qb = this.userRepository.createQueryBuilder('user').where(tabSql[tab]);
+            if (query.department) qb.andWhere('user.department = :department', { department: query.department });
+            if (query.designation) qb.andWhere('user.designation = :designation', { designation: query.designation });
+            if (query.region) qb.andWhere('user.region = :region', { region: query.region });
+            if (query.manager_id) qb.andWhere('user.manager_id = :managerId', { managerId: query.manager_id });
+            if (query.team_id) qb.andWhere('user.team_id = :teamId', { teamId: query.team_id });
+            if (query.starred === 'true') qb.andWhere('user.is_starred = true');
+
+            if (query.search) {
+                const search = `%${query.search}%`;
+                // Capped at 9 digits so a long number typed into search can't overflow the int column.
+                const employeeId = /^\d{1,9}$/.test(query.search) ? Number(query.search) : -1;
+                const byName = "(user.first_name || ' ' || user.last_name) ILIKE :search";
+                if (query.search_by === 'employee_id') qb.andWhere('user.id = :employeeId', { employeeId });
+                else if (query.search_by === 'name') qb.andWhere(byName, { search });
+                else qb.andWhere(`(${byName} OR user.email ILIKE :search OR user.id = :employeeId)`, { search, employeeId });
+            }
+            return qb;
+        };
+
+        const [[users, total], counts, departments, designations, regions] = await Promise.all([
+            inTab(query.status ?? 'active')
+                .orderBy('user.id', query.sort === 'desc' ? 'DESC' : 'ASC')
+                .skip((page - 1) * limit)
+                .take(limit)
+                .getManyAndCount(),
+            // Counted per tab with the other filters applied, so the tabs match the search.
+            Promise.all(STAFF_TABS.map((tab) => inTab(tab).getCount())),
+            this.distinctStaffValues('department'),
+            this.distinctStaffValues('designation'),
+            this.distinctStaffValues('region'),
+        ]);
+
+        const managerIds = [...new Set(users.map((user) => user.manager_id).filter((id) => id !== null))];
+        const [load, managers] = await Promise.all([
+            this.leadLoad(users.map((user) => user.id)),
+            managerIds.length > 0 ? this.userRepository.find({ where: { id: In(managerIds) } }) : [],
+        ]);
+        const managerById = new Map(managers.map((manager) => [manager.id, manager]));
+
+        return {
+            data: users.map((user) => {
+                const manager = user.manager_id ? managerById.get(user.manager_id) : undefined;
+                return {
+                    ...this.safeUser(user),
+                    manager: manager
+                        ? { id: manager.id, first_name: manager.first_name, last_name: manager.last_name }
+                        : null,
+                    ...(load.get(user.id) ?? { allocated_leads: 0, direct_leads: 0, projects_allocated: 0 }),
+                };
+            }),
+            total,
+            page,
+            limit,
+            status_counts: Object.fromEntries(STAFF_TABS.map((tab, i) => [tab, counts[i]])),
+            departments,
+            designations,
+            regions,
+        };
+    }
+
+    private async distinctStaffValues(column: 'department' | 'designation' | 'region') {
+        const rows = await this.userRepository
+            .createQueryBuilder('user')
+            .select(`DISTINCT user.${column}`, 'value')
+            .where(`user.${column} IS NOT NULL`)
+            .orderBy('value', 'ASC')
+            .getRawMany<{ value: string }>();
+        return rows.map((row) => row.value);
+    }
+
+    /** Leads each member holds, how many of those they brought in themselves, and the projects those leads span. */
+    private async leadLoad(userIds: number[]) {
+        const load = new Map<number, { allocated_leads: number; direct_leads: number; projects_allocated: number }>();
+        if (userIds.length === 0) return load;
+
+        const rows: { user_id: number; allocated: string; direct: string; projects: string }[] =
+            await this.userRepository.query(
+                `SELECT l.assigned_to_id AS user_id,
+                        COUNT(*) AS allocated,
+                        COUNT(*) FILTER (WHERE l.created_by_id = l.assigned_to_id) AS direct,
+                        COUNT(DISTINCT l.project_id) AS projects
+                 FROM "lead" l
+                 WHERE l.assigned_to_id = ANY($1::int[])
+                 GROUP BY l.assigned_to_id`,
+                [userIds],
+            );
+
+        for (const row of rows) {
+            load.set(row.user_id, {
+                allocated_leads: Number(row.allocated),
+                direct_leads: Number(row.direct),
+                projects_allocated: Number(row.projects),
+            });
+        }
+        return load;
+    }
+
     private async findTeam(id: string) {
         const team = await this.teamRepository.findOne({ where: { id } });
         if (!team) throw new BadRequestException('team_id does not match an existing team');
@@ -186,7 +345,7 @@ export class AuthService {
 
     async listAgents() {
         const agents = await this.userRepository.find({
-            where: { user_role: 'agent', blocked: false },
+            where: { user_role: 'agent', blocked: false, suspended: false },
             order: { first_name: 'ASC' },
         });
         return agents.map((agent) => ({

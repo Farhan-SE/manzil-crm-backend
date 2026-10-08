@@ -52,6 +52,9 @@ export class Unit {
     @Column({ type: 'text', default: 'available' })
     status: string;
 
+    @Column({ type: 'boolean', default: false })
+    is_starred: boolean;
+
     // The lead that has paid towards this unit. Null while the unit is available.
     @Column({ type: 'uuid', nullable: true })
     lead_id: string | null;
