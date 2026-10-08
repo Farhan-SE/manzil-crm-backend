@@ -61,6 +61,10 @@ export class FollowUp {
     @Column({ type: 'timestamptz', nullable: true })
     completed_at: Date | null;
 
+    /** When the assignee was notified that the task had fallen due. */
+    @Column({ type: 'timestamptz', nullable: true, select: false })
+    reminded_at: Date | null;
+
     @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL' })
     @JoinColumn({ name: 'created_by_id' })
     created_by: User | null;

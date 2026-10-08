@@ -230,6 +230,8 @@ export class FollowUpsService {
         if (dto.text !== undefined) followUp.text = dto.text;
         if (dto.due_date !== undefined) followUp.due_date = dto.due_date;
         if (dto.due_time !== undefined) followUp.due_time = dto.due_time;
+        // A rescheduled task is due again, so it earns a fresh reminder.
+        if (dto.due_date !== undefined || dto.due_time !== undefined) followUp.reminded_at = null;
         await this.followUpRepository.save(followUp);
     }
 
