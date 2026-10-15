@@ -182,6 +182,23 @@ export class AuthService {
         return this.safeUser(user);
     }
 
+    async transferLeads(fromId: number, toId: number) {
+        if (fromId === toId) throw new BadRequestException('Pick a different staff member to receive the leads');
+        const [from, to] = await Promise.all([
+            this.userRepository.findOne({ where: { id: fromId } }),
+            this.userRepository.findOne({ where: { id: toId } }),
+        ]);
+        if (!from) throw new NotFoundException('User not found');
+        if (!to) throw new BadRequestException('to_user_id does not match an existing user');
+        if (to.suspended || to.blocked) throw new BadRequestException(`${to.first_name} ${to.last_name} cannot take leads while deactivated`);
+
+        return this.userRepository.manager.transaction(async (manager) => {
+            const [, leads] = await manager.query(`UPDATE "lead" SET assigned_to_id = $2, updated_at = NOW() WHERE assigned_to_id = $1`, [fromId, toId]);
+            const [, customers] = await manager.query(`UPDATE "customers" SET assigned_to_id = $2, updated_at = NOW() WHERE assigned_to_id = $1`, [fromId, toId]);
+            return { leads: Number(leads), customers: Number(customers) };
+        });
+    }
+
     async setStarred(id: number, isStarred: boolean) {
         const result = await this.userRepository.update({ id }, { is_starred: isStarred });
         if (!result.affected) throw new NotFoundException('User not found');

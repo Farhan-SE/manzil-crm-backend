@@ -5,7 +5,7 @@ import { AddUserDto, SetTeamDto } from "./add-user.dto.js";
 import { ChangePasswordDto } from "./change-password.dto.js";
 import { BlockUserDto } from "./block-user.dto.js";
 import { ChangeRoleDto } from "./change-role.dto.js";
-import { FindStaffDto, StarUserDto, SuspendUserDto, UpdateStaffProfileDto } from "./staff.dto.js";
+import { FindStaffDto, StarUserDto, SuspendUserDto, TransferLeadsDto, UpdateStaffProfileDto } from "./staff.dto.js";
 import { JwtAuthGuard } from "../strategies/auth.guard.js";
 import { AdminGuard } from "../strategies/admin.guard.js";
 import { UserSession } from "../strategies/user.decorator.js";
@@ -54,6 +54,13 @@ export class AuthController {
         return this.authService.setSuspended(id, dto.suspended, user.userId);
     }
 
+    /** Hands every lead and client of one member to another, usually before deactivating them. */
+    @Post('users/:id/transfer-leads')
+    @UseGuards(JwtAuthGuard, AdminGuard)
+    async transferLeads(@Param('id', ParseIntPipe) id: number, @Body() dto: TransferLeadsDto) {
+        return this.authService.transferLeads(id, dto.to_user_id);
+    }
+
     // Open to every member, like the list itself — a star is a shared marker, not an edit.
     @Patch('users/:id/star')
     @UseGuards(JwtAuthGuard)
@@ -93,8 +100,9 @@ export class AuthController {
         return this.authService.setTeam(id, dto.team_id);
     }
 
+    // Names only, for pickers such as "Transfer to" — the Staff list already shows everyone.
     @Get('agents')
-    @UseGuards(JwtAuthGuard, AdminGuard)
+    @UseGuards(JwtAuthGuard)
     async listAgents() {
         return this.authService.listAgents();
     }
