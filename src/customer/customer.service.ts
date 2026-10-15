@@ -230,8 +230,9 @@ export class CustomerService {
             throw new ForbiddenException('Your role cannot reassign clients');
         }
 
+        // A client is identified by their number, so it is fixed once they are added. Sending it back unchanged is fine.
         if (dto.contact_number !== undefined && dto.contact_number !== customer.contact_number) {
-            await this.assertPhoneIsFree(dto.contact_number, id);
+            throw new BadRequestException("A client's phone number can't be changed once they are added");
         }
 
         if (dto.assigned_to_id !== undefined) {
@@ -252,7 +253,6 @@ export class CustomerService {
             customer.customer_name = [customer.first_name, customer.last_name].filter(Boolean).join(' ') || customer.customer_name;
         }
         if (dto.cnic_number !== undefined) customer.cnic_number = dto.cnic_number;
-        if (dto.contact_number !== undefined) customer.contact_number = dto.contact_number;
         if (dto.gender !== undefined) customer.gender = dto.gender;
         if (dto.alternate_contact_number !== undefined) customer.alternate_contact_number = dto.alternate_contact_number;
         if (dto.email !== undefined) customer.email = dto.email;
