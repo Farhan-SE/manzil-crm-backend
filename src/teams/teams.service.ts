@@ -73,6 +73,7 @@ export class TeamsService {
     async create(dto: TeamDto) {
         await this.assertNameIsFree(dto.name);
         if (dto.lead_id != null) await this.assertUserExists(dto.lead_id);
+        if (dto.member_ids) await this.assertMembersExist(dto.member_ids);
 
         const team = await this.teamRepository.save(
             this.teamRepository.create({
@@ -93,6 +94,7 @@ export class TeamsService {
         if (!team) throw new NotFoundException('Team not found');
         await this.assertNameIsFree(dto.name, id);
         if (dto.lead_id != null) await this.assertUserExists(dto.lead_id);
+        if (dto.member_ids) await this.assertMembersExist(dto.member_ids);
 
         team.name = dto.name.trim();
         if (dto.lead_id !== undefined) team.lead_id = dto.lead_id;
@@ -143,6 +145,14 @@ export class TeamsService {
             where: { tenant_id: tenantId(), name: ILike(name.trim().replace(/[%_\\]/g, '\\$&')), ...(excludeId ? { id: Not(excludeId) } : {}) },
         });
         if (existing) throw new ConflictException('A team with this name already exists');
+    }
+
+    /** Every member must be someone in this company; an unknown id is refused rather than skipped. */
+    private async assertMembersExist(memberIds: number[]) {
+        const unique = [...new Set(memberIds)];
+        if (unique.length === 0) return;
+        const found = await this.userRepository.count({ where: { id: In(unique), tenant_id: tenantId() } });
+        if (found !== unique.length) throw new BadRequestException('member_ids includes someone who is not in this company');
     }
 
     private async assertUserExists(id: number) {
