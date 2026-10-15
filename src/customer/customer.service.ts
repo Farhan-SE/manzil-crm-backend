@@ -16,7 +16,8 @@ import { needsPayment } from '../leads/stage-change.js';
 import { CreateCustomerDto } from './create-customer.dto.js';
 import { UpdateCustomerDto } from './update-customer.dto.js';
 import { FindCustomersDto } from './find-customers.dto.js';
-import { cell, parseCsvBuffer, type ImportResult } from '../common/csv.js';
+import { cell, parseSpreadsheet, type ImportResult } from '../common/csv.js';
+import { closestName, normalizeName } from '../common/fuzzy-name.js';
 import { tenantId } from '../tenants/tenant-context.js';
 import { assertReaches, can, scopedUserIds, type Requester } from '../access/access.js';
 
@@ -30,6 +31,16 @@ const DUPLICATE_PHONE = 'This phone number is already assigned to an agent';
 
 // The same rule in SQL; the unique index on customers uses this exact expression.
 const NORMALIZED_PHONE = "regexp_replace(regexp_replace(customer.contact_number, '[^0-9]', '', 'g'), '^(0092|92|0)', '')";
+
+/** Whether the client was added for the project, or has a lead on it. `alias` is the customer's id column. */
+const IN_PROJECT = (alias: string) =>
+    `(EXISTS (SELECT 1 FROM "customers" c WHERE c.id = ${alias} AND c.project_id = :projectId)` +
+    ` OR EXISTS (SELECT 1 FROM "lead" l WHERE l.customer_id = ${alias} AND l.project_id = :projectId))`;
+
+/** Whether the client's own project or a lead's project is named like :projectName. */
+const PROJECT_NAMED = (alias: string) =>
+    `(EXISTS (SELECT 1 FROM "customers" c JOIN "partner_project" p ON p.id = c.project_id WHERE c.id = ${alias} AND p.project_name ILIKE :projectName)` +
+    ` OR EXISTS (SELECT 1 FROM "lead" l JOIN "partner_project" p ON p.id = l.project_id WHERE l.customer_id = ${alias} AND p.project_name ILIKE :projectName))`;
 
 type LeadSummary = Map<string, { count: number; latestLeadId: string; project: { id: string; name: string } | null }>;
 
@@ -50,6 +61,7 @@ const CUSTOMER_ALIASES = {
     customer_since: ['since', 'customer since', 'date'],
     source: ['source', 'lead source'],
     notes: ['notes', 'remarks', 'comments'],
+    project: ['project', 'project name'],
 };
 
 @Injectable()
@@ -99,6 +111,7 @@ export class CustomerService {
             relation_type: dto.relation_type ?? null,
             source_id: dto.source_id ?? null,
             sub_source: dto.sub_source ?? null,
+            project_id: project.id,
             country: dto.country?.toUpperCase() ?? 'PK',
             stage: dto.stage ?? 'inquiry',
             customer_since: dto.customer_since ? new Date(dto.customer_since) : null,
@@ -152,7 +165,7 @@ export class CustomerService {
         const [[data, total], counts] = await Promise.all([
             this.customerRepository.findAndCount({
                 where: this.visibleTo(this.buildWhere(query, query.stage), owners),
-                relations: { assigned_to: true, source: true },
+                relations: { assigned_to: true, source: true, project: true },
                 order: { customer_no: query.sort === 'asc' ? 'ASC' : 'DESC' },
                 skip,
                 take: limit,
@@ -180,7 +193,7 @@ export class CustomerService {
     async findOne(id: string, requester: Requester) {
         const customer = await this.customerRepository.findOne({
             where: this.visibleTo({ id, tenant_id: tenantId() }, await scopedUserIds(this.customerRepository.manager, requester, 'customers.view')),
-            relations: { assigned_to: true, source: true },
+            relations: { assigned_to: true, source: true, project: true },
         });
         if (!customer) throw new NotFoundException('Customer not found');
         return this.serialize(customer, await this.countLeads([customer]));
@@ -217,8 +230,9 @@ export class CustomerService {
             throw new ForbiddenException('Your role cannot reassign clients');
         }
 
+        // A client is identified by their number, so it is fixed once they are added. Sending it back unchanged is fine.
         if (dto.contact_number !== undefined && dto.contact_number !== customer.contact_number) {
-            await this.assertPhoneIsFree(dto.contact_number, id);
+            throw new BadRequestException("A client's phone number can't be changed once they are added");
         }
 
         if (dto.assigned_to_id !== undefined) {
@@ -239,7 +253,6 @@ export class CustomerService {
             customer.customer_name = [customer.first_name, customer.last_name].filter(Boolean).join(' ') || customer.customer_name;
         }
         if (dto.cnic_number !== undefined) customer.cnic_number = dto.cnic_number;
-        if (dto.contact_number !== undefined) customer.contact_number = dto.contact_number;
         if (dto.gender !== undefined) customer.gender = dto.gender;
         if (dto.alternate_contact_number !== undefined) customer.alternate_contact_number = dto.alternate_contact_number;
         if (dto.email !== undefined) customer.email = dto.email;
@@ -272,12 +285,28 @@ export class CustomerService {
         await this.customerRepository.remove(customer);
     }
 
-    async importCsv(buffer: Buffer): Promise<ImportResult> {
-        const rows = parseCsvBuffer(buffer);
+    /**
+     * Adds clients from a .csv or .xlsx. A row's project is matched to an existing one by name, allowing
+     * for case, punctuation and small misspellings; only a name nothing is close to becomes a new project.
+     * No lead is opened, unlike adding a client from the form.
+     */
+    async importCsv(buffer: Buffer, createdById: number): Promise<ImportResult> {
+        const rows = await parseSpreadsheet(buffer);
         const sources = await this.sourceRepository.find({ where: { tenant_id: tenantId() } });
         const sourceIdByName = new Map(sources.map((s) => [s.name.toLowerCase(), s.id]));
+        // Grows as the import creates projects, so later rows spelling the same name differently join them.
+        const projects = (
+            await this.projectRepository.find({ where: { tenant_id: tenantId() }, select: { id: true, project_name: true } })
+        ).map((project) => ({ id: project.id, name: project.project_name }));
 
-        const result: ImportResult = { total: rows.length, added: 0, skipped: 0, errors: [] };
+        const result: ImportResult = {
+            total: rows.length,
+            added: 0,
+            skipped: 0,
+            errors: [],
+            projects_created: [],
+            projects_matched: [],
+        };
 
         for (const [index, row] of rows.entries()) {
             // +2 so the number matches the spreadsheet line the user sees (1 = header).
@@ -306,10 +335,32 @@ export class CustomerService {
             const sourceName = cell(row, CUSTOMER_ALIASES.source).toLowerCase();
             const since = cell(row, CUSTOMER_ALIASES.customer_since);
 
+            const projectName = cell(row, CUSTOMER_ALIASES.project).replace(/\s+/g, ' ');
+            let projectId: string | null = null;
+            if (projectName) {
+                const existing = closestName(projectName, projects);
+                if (existing) {
+                    projectId = existing.id;
+                    // A name that only matched by being close is reported once, so a wrong guess can be spotted.
+                    const spelledDifferently = normalizeName(existing.name) !== normalizeName(projectName);
+                    if (spelledDifferently && !result.projects_matched!.some((m) => m.from === projectName)) {
+                        result.projects_matched!.push({ from: projectName, to: existing.name });
+                    }
+                } else {
+                    const created = await this.projectRepository.save(
+                        this.projectRepository.create({ project_name: projectName, created_by: { id: createdById } as User }),
+                    );
+                    projectId = created.id;
+                    projects.push({ id: created.id, name: projectName });
+                    result.projects_created!.push(projectName);
+                }
+            }
+
             const customer = this.customerRepository.create({
                 customer_name: name,
-                cnic_number: cell(row, CUSTOMER_ALIASES.cnic_number),
+                cnic_number: cell(row, CUSTOMER_ALIASES.cnic_number) || null,
                 contact_number: phone,
+                project_id: projectId,
                 alternate_contact_number: cell(row, CUSTOMER_ALIASES.alternate_contact_number) || null,
                 email: cell(row, CUSTOMER_ALIASES.email) || null,
                 address: cell(row, CUSTOMER_ALIASES.address) || null,
@@ -319,6 +370,7 @@ export class CustomerService {
                 customer_since: since && !Number.isNaN(Date.parse(since)) ? new Date(since) : null,
                 notes: cell(row, CUSTOMER_ALIASES.notes) || null,
                 assigned_to: null,
+                created_by: { id: createdById } as User,
             });
 
             await this.customerRepository.save(customer);
@@ -366,10 +418,7 @@ export class CustomerService {
             );
         }
         if (query.project_id) {
-            baseFilter.id = Raw(
-                (alias) => `EXISTS (SELECT 1 FROM "lead" l WHERE l.customer_id = ${alias} AND l.project_id = :projectId)`,
-                { projectId: query.project_id },
-            );
+            baseFilter.id = Raw((alias) => IN_PROJECT(alias), { projectId: query.project_id });
         }
 
         if (!search) return baseFilter;
@@ -383,12 +432,10 @@ export class CustomerService {
         if (query.search_by === 'client_id') return { ...baseFilter, customer_no: searchNo ?? -1 };
         if (query.search_by === 'project') {
             // Shares the id slot with the project filter, so both conditions go in one expression.
-            const projectCondition = query.project_id ? ' AND l.project_id = :projectId' : '';
             return {
                 ...baseFilter,
                 id: Raw(
-                    (alias) =>
-                        `EXISTS (SELECT 1 FROM "lead" l JOIN "partner_project" p ON p.id = l.project_id WHERE l.customer_id = ${alias} AND p.project_name ILIKE :projectName${projectCondition})`,
+                    (alias) => (query.project_id ? `${PROJECT_NAMED(alias)} AND ${IN_PROJECT(alias)}` : PROJECT_NAMED(alias)),
                     { projectName: `%${search}%`, projectId: query.project_id },
                 ),
             };
@@ -459,8 +506,10 @@ export class CustomerService {
             country: customer.country,
             is_starred: customer.is_starred,
             lead_count: leadCounts.get(customer.id)?.count ?? 0,
-            /** The project of the client's most recent lead. */
-            project: leadCounts.get(customer.id)?.project ?? null,
+            /** The project of the client's most recent lead, or the one they were added for. */
+            project:
+                leadCounts.get(customer.id)?.project ??
+                (customer.project ? { id: customer.project.id, name: customer.project.project_name } : null),
             /** The lead a stage change with a payment is recorded against. */
             latest_lead_id: leadCounts.get(customer.id)?.latestLeadId ?? null,
             customer_name: customer.customer_name,

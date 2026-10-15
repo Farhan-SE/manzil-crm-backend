@@ -346,8 +346,11 @@ export class LeadsService {
             lead.assigned_to = assignedTo;
         }
 
+        // The number is fixed once added, like the client's own. Sending it back unchanged is fine.
+        if (dto.client_number !== undefined && dto.client_number !== lead.client_number) {
+            throw new BadRequestException("A lead's phone number can't be changed once it is added");
+        }
         if (dto.client_name !== undefined) lead.client_name = dto.client_name;
-        if (dto.client_number !== undefined) lead.client_number = dto.client_number;
         if (dto.interest_id !== undefined) lead.interest_id = dto.interest_id;
         if (dto.category_id !== undefined) lead.category_id = dto.category_id;
         if (dto.city !== undefined) lead.city = dto.city;
