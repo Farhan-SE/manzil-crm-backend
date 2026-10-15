@@ -22,16 +22,24 @@ import { FindCustomersDto, StarCustomerDto } from './find-customers.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
 import { AdminGuard } from '../strategies/admin.guard.js';
 import { UserSession } from '../strategies/user.decorator.js';
+import { BulkAssignDto } from '../common/bulk-assign.dto.js';
 
 @Controller('customers')
 @UseGuards(JwtAuthGuard)
 export class CustomerController {
     constructor(private readonly customerService: CustomerService) { }
 
-    @UseGuards(AdminGuard)
+    // Open to agents: a client an agent adds is theirs.
     @Post()
-    create(@Body() dto: CreateCustomerDto) {
-        return this.customerService.create(dto);
+    create(@Body() dto: CreateCustomerDto, @UserSession() user: any) {
+        return this.customerService.create(dto, user);
+    }
+
+    /** Moves clients, and their leads with them, to one staff member. */
+    @UseGuards(AdminGuard)
+    @Post('bulk-assign')
+    bulkAssign(@Body() dto: BulkAssignDto) {
+        return this.customerService.bulkAssign(dto.ids, dto.assigned_to_id);
     }
 
     @UseGuards(AdminGuard)
@@ -43,13 +51,13 @@ export class CustomerController {
     }
 
     @Get()
-    findAll(@Query() query: FindCustomersDto) {
-        return this.customerService.findAll(query);
+    findAll(@Query() query: FindCustomersDto, @UserSession() user: any) {
+        return this.customerService.findAll(query, user);
     }
 
     @Get(':id')
-    findOne(@Param('id', ParseUUIDPipe) id: string) {
-        return this.customerService.findOne(id);
+    findOne(@Param('id', ParseUUIDPipe) id: string, @UserSession() user: any) {
+        return this.customerService.findOne(id, user);
     }
 
     // No AdminGuard: the service lets the customer's own agent through, admins for any.

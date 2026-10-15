@@ -6,17 +6,31 @@ import {
     NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ILike, Raw, Repository } from 'typeorm';
+import { ILike, In, Raw, Repository } from 'typeorm';
 import { CUSTOMER_STAGES, Customers } from './customer.entity.js';
 import { Lead } from '../leads/lead.entity.js';
 import { User } from '../auth/user.entity.js';
 import { Source } from '../sources/source.entity.js';
+import { PartnerProject } from '../partner-projects/partner-project.entity.js';
+import { needsPayment } from '../leads/stage-change.js';
 import { CreateCustomerDto } from './create-customer.dto.js';
 import { UpdateCustomerDto } from './update-customer.dto.js';
 import { FindCustomersDto } from './find-customers.dto.js';
 import { cell, parseCsvBuffer, type ImportResult } from '../common/csv.js';
 
 type Requester = { userId: number; role: string };
+
+/** A phone number reduced to its national digits, so 0300-1234567 and +92 300 1234567 compare equal. */
+export function normalizePhone(phone: string) {
+    return phone.replace(/\D/g, '').replace(/^(0092|92|0)/, '');
+}
+
+const DUPLICATE_PHONE = 'This phone number is already assigned to an agent';
+
+// The same rule in SQL; the unique index on customers uses this exact expression.
+const NORMALIZED_PHONE = "regexp_replace(regexp_replace(customer.contact_number, '[^0-9]', '', 'g'), '^(0092|92|0)', '')";
+
+type LeadSummary = Map<string, { count: number; latestLeadId: string; project: { id: string; name: string } | null }>;
 
 const RELATION_TYPES = ['buyer', 'seller', 'investor'];
 
@@ -44,14 +58,23 @@ export class CustomerService {
         private customerRepository: Repository<Customers>,
         @InjectRepository(User)
         private userRepository: Repository<User>,
+        @InjectRepository(PartnerProject)
+        private projectRepository: Repository<PartnerProject>,
         @InjectRepository(Source)
         private sourceRepository: Repository<Source>,
         @InjectRepository(Lead)
         private leadRepository: Repository<Lead>,
     ) { }
 
-    async create(dto: CreateCustomerDto) {
+    async create(dto: CreateCustomerDto, requester: Requester) {
+        const createdById = requester.userId;
+        // An agent's client is theirs; only an admin chooses someone else.
+        if (requester.role !== 'admin') dto.assigned_to_id = requester.userId;
         await this.assertPhoneIsFree(dto.contact_number);
+        const project = await this.projectRepository.findOne({ where: { id: dto.project_id } });
+        if (!project) throw new BadRequestException('project_id does not match an existing project');
+        const firstName = dto.first_name?.trim() || null;
+        const lastName = dto.last_name?.trim() || null;
 
         let assignedTo: User | null = null;
         if (dto.assigned_to_id) {
@@ -62,8 +85,10 @@ export class CustomerService {
         if (dto.source_id) await this.assertSourceExists(dto.source_id);
 
         const customer = this.customerRepository.create({
-            customer_name: dto.customer_name,
-            cnic_number: dto.cnic_number,
+            customer_name: [firstName, lastName].filter(Boolean).join(' ') || dto.customer_name!.trim(),
+            first_name: firstName,
+            last_name: lastName,
+            cnic_number: dto.cnic_number?.trim() || null,
             contact_number: dto.contact_number,
             gender: dto.gender ?? null,
             alternate_contact_number: dto.alternate_contact_number ?? null,
@@ -78,20 +103,53 @@ export class CustomerService {
             customer_since: dto.customer_since ? new Date(dto.customer_since) : null,
             notes: dto.notes ?? null,
             assigned_to: assignedTo,
+            created_by: { id: createdById } as User,
         });
-        await this.customerRepository.save(customer);
-        return this.findOne(customer.id);
+        try {
+            await this.customerRepository.save(customer);
+        } catch (error) {
+            // Two people adding the same number at once: the unique index stops the second.
+            if ((error as { code?: string }).code === '23505') {
+                throw new ConflictException(DUPLICATE_PHONE);
+            }
+            throw error;
+        }
+        await this.openLead(customer, project, createdById);
+        return this.findOne(customer.id, requester);
+    }
+
+    /** A client added with a project starts with one lead on it, owned by the same agent. */
+    private async openLead(customer: Customers, project: PartnerProject, createdById?: number) {
+        await this.leadRepository.save(
+            this.leadRepository.create({
+                customer_id: customer.id,
+                client_name: customer.customer_name,
+                client_number: customer.contact_number,
+                city: customer.city,
+                area: project.location,
+                source_id: customer.source_id,
+                sub_source: customer.sub_source,
+                project_id: project.id,
+                interest_id: project.interest_id,
+                category_id: project.category_id,
+                stage: customer.stage,
+                sold_at: customer.stage === 'sold' ? new Date() : null,
+                assigned_to: customer.assigned_to,
+                created_by: createdById ? ({ id: createdById } as User) : null,
+            }),
+        );
     }
 
     /** Shared like inventory — every agent sees every customer. Editing stays with the assigned agent. */
-    async findAll(query: FindCustomersDto) {
+    /** Admins see every client; anyone else the clients they added or that are assigned to them. */
+    async findAll(query: FindCustomersDto, requester: Requester) {
         const page = query.page ?? 1;
         const limit = query.limit ?? 20;
         const skip = (page - 1) * limit;
 
         const [[data, total], counts] = await Promise.all([
             this.customerRepository.findAndCount({
-                where: this.buildWhere(query, query.stage),
+                where: this.visibleTo(this.buildWhere(query, query.stage), requester),
                 relations: { assigned_to: true, source: true },
                 order: { customer_no: query.sort === 'asc' ? 'ASC' : 'DESC' },
                 skip,
@@ -100,7 +158,7 @@ export class CustomerService {
             // Counted per stage with the other filters applied, so the tabs match the search.
             Promise.all(
                 CUSTOMER_STAGES.map((stage) =>
-                    this.customerRepository.count({ where: this.buildWhere(query, stage) }),
+                    this.customerRepository.count({ where: this.visibleTo(this.buildWhere(query, stage), requester) }),
                 ),
             ),
         ]);
@@ -117,13 +175,24 @@ export class CustomerService {
         };
     }
 
-    async findOne(id: string) {
+    async findOne(id: string, requester: Requester) {
         const customer = await this.customerRepository.findOne({
-            where: { id },
+            where: this.visibleTo({ id }, requester),
             relations: { assigned_to: true, source: true },
         });
         if (!customer) throw new NotFoundException('Customer not found');
         return this.serialize(customer, await this.countLeads([customer]));
+    }
+
+    async bulkAssign(ids: string[], assignedToId: number) {
+        const assignee = await this.userRepository.findOne({ where: { id: assignedToId } });
+        if (!assignee) throw new BadRequestException('assigned_to_id does not match an existing user');
+        if (assignee.suspended || assignee.blocked) throw new BadRequestException('That staff member is deactivated');
+        return this.customerRepository.manager.transaction(async (manager) => {
+            const clients = await manager.update(Customers, { id: In(ids) }, { assigned_to: assignee });
+            const leads = await manager.update(Lead, { customer_id: In(ids) }, { assigned_to: assignee });
+            return { updated: clients.affected ?? 0, leads: leads.affected ?? 0 };
+        });
     }
 
     async setStarred(id: string, isStarred: boolean) {
@@ -166,6 +235,11 @@ export class CustomerService {
         }
 
         if (dto.customer_name !== undefined) customer.customer_name = dto.customer_name;
+        if (dto.first_name !== undefined || dto.last_name !== undefined) {
+            if (dto.first_name !== undefined) customer.first_name = dto.first_name.trim() || null;
+            if (dto.last_name !== undefined) customer.last_name = dto.last_name.trim() || null;
+            customer.customer_name = [customer.first_name, customer.last_name].filter(Boolean).join(' ') || customer.customer_name;
+        }
         if (dto.cnic_number !== undefined) customer.cnic_number = dto.cnic_number;
         if (dto.contact_number !== undefined) customer.contact_number = dto.contact_number;
         if (dto.gender !== undefined) customer.gender = dto.gender;
@@ -176,6 +250,9 @@ export class CustomerService {
         if (dto.relation_type !== undefined) customer.relation_type = dto.relation_type;
         if (dto.sub_source !== undefined) customer.sub_source = dto.sub_source || null;
         if (dto.country !== undefined) customer.country = dto.country.toUpperCase();
+        if (dto.stage !== undefined && needsPayment(customer.stage, dto.stage)) {
+            throw new BadRequestException("Moving a client to Pre-Closure or Sold goes through their lead, with the payment received");
+        }
         if (dto.stage !== undefined) customer.stage = dto.stage;
         if (dto.customer_since !== undefined) customer.customer_since = new Date(dto.customer_since);
         if (dto.notes !== undefined) customer.notes = dto.notes;
@@ -186,7 +263,7 @@ export class CustomerService {
             { customer_id: id },
             { client_name: customer.customer_name, client_number: customer.contact_number },
         );
-        return this.findOne(id);
+        return this.findOne(id, requester);
     }
 
     async remove(id: string) {
@@ -216,10 +293,9 @@ export class CustomerService {
                 continue;
             }
 
-            const digits = phone.replace(/\D/g, '');
             const duplicate = await this.customerRepository
                 .createQueryBuilder('customer')
-                .where("regexp_replace(customer.contact_number, '\\D', '', 'g') = :digits", { digits })
+                .where(`${NORMALIZED_PHONE} = :digits`, { digits: normalizePhone(phone) })
                 .getOne();
             if (duplicate) {
                 result.skipped += 1;
@@ -253,6 +329,20 @@ export class CustomerService {
         return result;
     }
 
+    /** Narrows any where clause (or list of OR'd clauses) to the clients the requester may see. */
+    private visibleTo(where: Record<string, unknown> | Record<string, unknown>[], requester: Requester) {
+        if (requester.role === 'admin') return where;
+        const me = { id: requester.userId };
+        return (Array.isArray(where) ? where : [where]).flatMap((clause) => {
+            const assigned = clause.assigned_to as { id: number } | undefined;
+            return [
+                { ...clause, created_by: me },
+                // A filter on someone else's clients leaves nothing to add here.
+                ...(assigned && assigned.id !== requester.userId ? [] : [{ ...clause, assigned_to: me }]),
+            ];
+        });
+    }
+
     private buildWhere(query: FindCustomersDto, stage?: string) {
         const { search, relation_type, source_id, city } = query;
 
@@ -268,6 +358,12 @@ export class CustomerService {
             baseFilter.created_at = Raw((alias) => `CAST(${alias} AS date) = :createdDate`, {
                 createdDate: query.created_date,
             });
+        }
+        if (query.lead_count !== undefined) {
+            baseFilter.customer_no = Raw(
+                (alias) => `(SELECT COUNT(*) FROM "lead" l JOIN "customers" c ON c.id = l.customer_id WHERE c.customer_no = ${alias}) = :leadCount`,
+                { leadCount: query.lead_count },
+            );
         }
         if (query.project_id) {
             baseFilter.id = Raw(
@@ -285,6 +381,18 @@ export class CustomerService {
         if (query.search_by === 'cnic') return { ...baseFilter, cnic_number: ILike(`%${search}%`) };
         // A client ID that isn't a number can't match anything.
         if (query.search_by === 'client_id') return { ...baseFilter, customer_no: searchNo ?? -1 };
+        if (query.search_by === 'project') {
+            // Shares the id slot with the project filter, so both conditions go in one expression.
+            const projectCondition = query.project_id ? ' AND l.project_id = :projectId' : '';
+            return {
+                ...baseFilter,
+                id: Raw(
+                    (alias) =>
+                        `EXISTS (SELECT 1 FROM "lead" l JOIN "partner_project" p ON p.id = l.project_id WHERE l.customer_id = ${alias} AND p.project_name ILIKE :projectName${projectCondition})`,
+                    { projectName: `%${search}%`, projectId: query.project_id },
+                ),
+            };
+        }
 
         const where: Record<string, unknown>[] = [
             { ...baseFilter, customer_name: ILike(`%${search}%`) },
@@ -297,19 +405,29 @@ export class CustomerService {
         return where;
     }
 
+    /** Each client's number of leads, and the project of the most recent one. */
     private async countLeads(customers: Customers[]) {
-        const counts = new Map<string, number>();
+        const counts: LeadSummary = new Map();
         if (customers.length === 0) return counts;
 
-        const rows = await this.leadRepository
-            .createQueryBuilder('lead')
-            .select('lead.customer_id', 'customer_id')
-            .addSelect('COUNT(*)', 'count')
-            .where('lead.customer_id IN (:...ids)', { ids: customers.map((c) => c.id) })
-            .groupBy('lead.customer_id')
-            .getRawMany<{ customer_id: string; count: string }>();
+        const rows: { customer_id: string; count: string; latest_lead_id: string; project_id: string | null; project_name: string | null }[] =
+            await this.leadRepository.query(
+                `SELECT l.customer_id, COUNT(*) AS count, (ARRAY_AGG(l.id ORDER BY l.created_at DESC))[1] AS latest_lead_id,
+                        (ARRAY_AGG(p.id ORDER BY l.created_at DESC) FILTER (WHERE p.id IS NOT NULL))[1] AS project_id,
+                        (ARRAY_AGG(p.project_name ORDER BY l.created_at DESC) FILTER (WHERE p.id IS NOT NULL))[1] AS project_name
+                 FROM "lead" l LEFT JOIN "partner_project" p ON p.id = l.project_id
+                 WHERE l.customer_id = ANY($1)
+                 GROUP BY l.customer_id`,
+                [customers.map((c) => c.id)],
+            );
 
-        for (const row of rows) counts.set(row.customer_id, Number(row.count));
+        for (const row of rows) {
+            counts.set(row.customer_id, {
+                count: Number(row.count),
+                latestLeadId: row.latest_lead_id,
+                project: row.project_id ? { id: row.project_id, name: row.project_name! } : null,
+            });
+        }
         return counts;
     }
 
@@ -318,21 +436,20 @@ export class CustomerService {
         if (!source) throw new BadRequestException('source_id does not match an existing source');
     }
 
-    /** Phone is the duplicate key — compared on digits only, so 0300-1234567 and 03001234567 collide. */
+    /** One client per phone number. The message gives nothing away about the existing client. */
     private async assertPhoneIsFree(phone: string, excludeId?: string) {
-        const digits = phone.replace(/\D/g, '');
+        const digits = normalizePhone(phone);
         if (!digits) return;
 
         const qb = this.customerRepository
             .createQueryBuilder('customer')
-            .where("regexp_replace(customer.contact_number, '\\D', '', 'g') = :digits", { digits });
+            .where(`${NORMALIZED_PHONE} = :digits`, { digits });
         if (excludeId) qb.andWhere('customer.id != :excludeId', { excludeId });
 
-        const existing = await qb.getOne();
-        if (existing) throw new ConflictException('A customer with this phone number already exists');
+        if (await qb.getExists()) throw new ConflictException(DUPLICATE_PHONE);
     }
 
-    private serialize(customer: Customers, leadCounts: Map<string, number>) {
+    private serialize(customer: Customers, leadCounts: LeadSummary) {
         return {
             id: customer.id,
             customer_no: customer.customer_no,
@@ -340,8 +457,14 @@ export class CustomerService {
             sub_source: customer.sub_source,
             country: customer.country,
             is_starred: customer.is_starred,
-            lead_count: leadCounts.get(customer.id) ?? 0,
+            lead_count: leadCounts.get(customer.id)?.count ?? 0,
+            /** The project of the client's most recent lead. */
+            project: leadCounts.get(customer.id)?.project ?? null,
+            /** The lead a stage change with a payment is recorded against. */
+            latest_lead_id: leadCounts.get(customer.id)?.latestLeadId ?? null,
             customer_name: customer.customer_name,
+            first_name: customer.first_name,
+            last_name: customer.last_name,
             cnic_number: customer.cnic_number,
             contact_number: customer.contact_number,
             gender: customer.gender,
