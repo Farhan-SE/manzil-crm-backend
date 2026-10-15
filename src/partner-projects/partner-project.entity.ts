@@ -24,6 +24,13 @@ export class PartnerProject {
     @Column({ type: 'text', nullable: true })
     developer: string | null;
 
+    /** Who owns the project. Shown to admins only. */
+    @Column({ type: 'text', nullable: true })
+    owner_name: string | null;
+
+    @Column({ type: 'text', nullable: true })
+    owner_phone: string | null;
+
     @Column({ type: 'uuid', nullable: true })
     category_id: string | null;
 

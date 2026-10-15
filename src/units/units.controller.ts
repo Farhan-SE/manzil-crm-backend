@@ -26,10 +26,10 @@ import { UserSession } from '../strategies/user.decorator.js';
 export class UnitsController {
     constructor(private readonly unitsService: UnitsService) { }
 
-    @UseGuards(AdminGuard)
+    // Open to agents: their units wait in Management for an admin to approve.
     @Post()
     create(@Body() dto: CreateUnitDto, @UserSession() user: any) {
-        return this.unitsService.create(dto, user.userId);
+        return this.unitsService.create(dto, user);
     }
 
     @UseGuards(AdminGuard)
@@ -41,8 +41,8 @@ export class UnitsController {
     }
 
     @Get()
-    findAll(@Query() query: FindUnitsDto) {
-        return this.unitsService.findAll(query);
+    findAll(@Query() query: FindUnitsDto, @UserSession() user: any) {
+        return this.unitsService.findAll(query, user);
     }
 
     @Get(':id')

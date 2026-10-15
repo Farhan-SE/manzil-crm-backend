@@ -30,6 +30,8 @@ export class PartnerProjectsService {
         const project = this.projectRepository.create({
             project_name: dto.project_name,
             developer: dto.developer ?? null,
+            owner_name: dto.owner_name?.trim() || null,
+            owner_phone: dto.owner_phone?.trim() || null,
             category_id: dto.category_id ?? null,
             interest_id: dto.interest_id ?? null,
             city: dto.city ?? null,
@@ -96,6 +98,8 @@ export class PartnerProjectsService {
 
         if (dto.project_name !== undefined) project.project_name = dto.project_name;
         if (dto.developer !== undefined) project.developer = dto.developer;
+        if (dto.owner_name !== undefined) project.owner_name = dto.owner_name.trim() || null;
+        if (dto.owner_phone !== undefined) project.owner_phone = dto.owner_phone.trim() || null;
         if (dto.category_id !== undefined) project.category_id = dto.category_id;
         if (dto.interest_id !== undefined) project.interest_id = dto.interest_id;
         if (dto.city !== undefined) project.city = dto.city;
@@ -142,7 +146,7 @@ export class PartnerProjectsService {
                     MIN(u.price) AS price_min,
                     MAX(u.price) AS price_max
              FROM "unit" u
-             WHERE u.project_id = ANY($1::uuid[])
+             WHERE u.project_id = ANY($1::uuid[]) AND u.approval_status = 'approved'
              GROUP BY u.project_id`,
             [projectIds],
         );
@@ -172,6 +176,8 @@ export class PartnerProjectsService {
             id: project.id,
             project_name: project.project_name,
             developer: project.developer,
+            owner_name: project.owner_name,
+            owner_phone: project.owner_phone,
             category_id: project.category_id,
             interest_id: project.interest_id,
             city: project.city,

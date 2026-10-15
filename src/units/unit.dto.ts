@@ -1,8 +1,12 @@
 import { Type } from 'class-transformer';
 import { IsBoolean, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, IsUUID, Min } from 'class-validator';
-import { UNIT_STATUSES } from './unit.entity.js';
+import { INVENTORY_TYPES, UNIT_STATUSES } from './unit.entity.js';
 
 export class CreateUnitDto {
+    /** The company's own stock or a sales partner's. */
+    @IsIn(INVENTORY_TYPES)
+    inventory_type: string;
+
     @IsUUID()
     project_id: string;
 
@@ -83,6 +87,10 @@ export class UpdateUnitDto {
 }
 
 export class FindUnitsDto {
+    @IsOptional()
+    @IsIn(INVENTORY_TYPES)
+    inventory_type?: string;
+
     @IsOptional()
     @IsUUID()
     project_id?: string;

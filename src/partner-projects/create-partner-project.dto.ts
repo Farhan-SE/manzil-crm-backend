@@ -10,6 +10,14 @@ export class CreatePartnerProjectDto {
     developer?: string;
 
     @IsOptional()
+    @IsString()
+    owner_name?: string;
+
+    @IsOptional()
+    @IsString()
+    owner_phone?: string;
+
+    @IsOptional()
     @IsUUID()
     category_id?: string;
 

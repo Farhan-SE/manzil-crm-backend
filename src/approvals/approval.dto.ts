@@ -9,6 +9,7 @@ import {
     IsString,
     IsUUID,
     Min,
+    ValidateIf,
 } from 'class-validator';
 import { APPROVAL_DECISIONS, APPROVAL_PRIORITIES, APPROVAL_TYPES } from './approval.entity.js';
 
@@ -26,6 +27,12 @@ export class CreateApprovalDto {
     @IsUUID()
     lead_id: string;
 
+    /** For a `lead_transfer`: the staff member the lead should go to. */
+    @ValidateIf((dto: CreateApprovalDto) => dto.type === 'lead_transfer')
+    @Type(() => Number)
+    @IsInt()
+    target_user_id?: number;
+
     @IsOptional()
     @IsIn(APPROVAL_PRIORITIES)
     priority?: string;
@@ -33,6 +40,12 @@ export class CreateApprovalDto {
     @IsOptional()
     @IsDateString()
     due_date?: string;
+}
+
+export class ResubmitApprovalDto {
+    /** The information the reviewer asked for. */
+    @IsNotEmpty()
+    note: string;
 }
 
 export class FindApprovalsDto {

@@ -1,7 +1,10 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 import { Approval, APPROVAL_TYPES } from './approval.entity.js';
+import { Payment } from '../payments/payment.entity.js';
+import { Unit } from '../units/unit.entity.js';
+import { Customers } from '../customer/customer.entity.js';
 import { Lead } from '../leads/lead.entity.js';
 import { User } from '../auth/user.entity.js';
 import { APPROVAL_TABS, CreateApprovalDto, FindApprovalsDto, type ApprovalTab } from './approval.dto.js';
@@ -28,8 +31,17 @@ export class ApprovalsService {
     ) { }
 
     async create(dto: CreateApprovalDto, requester: Requester) {
-        const lead = await this.leadRepository.findOne({ where: { id: dto.lead_id } });
+        const lead = await this.leadRepository.findOne({ where: { id: dto.lead_id }, relations: { assigned_to: true } });
         if (!lead) throw new BadRequestException('lead_id does not match an existing lead');
+        if (dto.type === 'inventory_approval') {
+            throw new BadRequestException('Inventory approvals are raised by adding a unit');
+        }
+        let target: User | null = null;
+        if (dto.type === 'lead_transfer') {
+            target = await this.userRepository.findOne({ where: { id: dto.target_user_id } });
+            if (!target) throw new BadRequestException('target_user_id does not match an existing user');
+            if (target.id === lead.assigned_to?.id) throw new BadRequestException('The lead is already with that staff member');
+        }
 
         const approval = await this.approvalRepository.save(
             this.approvalRepository.create({
@@ -39,6 +51,7 @@ export class ApprovalsService {
                 priority: dto.priority ?? 'normal',
                 due_date: dto.due_date ?? null,
                 submitted_by: { id: requester.userId } as User,
+                target_user: target,
             }),
         );
         return this.findOne(approval.id, requester);
@@ -83,7 +96,7 @@ export class ApprovalsService {
 
     /** Admin-only at the controller. A returned request can be decided again once it comes back. */
     async decide(id: string, decision: string, comment: string | undefined, requester: Requester) {
-        const approval = await this.approvalRepository.findOne({ where: { id } });
+        const approval = await this.approvalRepository.findOne({ where: { id }, relations: { lead: true, target_user: true } });
         if (!approval) throw new NotFoundException('Approval request not found');
         if (approval.status === 'approved' || approval.status === 'rejected') {
             throw new ConflictException('This request has already been decided');
@@ -93,6 +106,42 @@ export class ApprovalsService {
         approval.review_comment = comment?.trim() || null;
         approval.reviewer = { id: requester.userId } as User;
         approval.decided_at = new Date();
+        await this.approvalRepository.manager.transaction(async (manager) => {
+            await manager.save(approval);
+            await this.carryOut(manager, approval, decision, requester);
+        });
+        return this.findOne(id, requester);
+    }
+
+    /** What a decision does to the thing it was about. A returned request changes nothing yet. */
+    private async carryOut(manager: EntityManager, approval: Approval, decision: string, requester: Requester) {
+        if (decision === 'returned') return;
+        const approved = decision === 'approved';
+        if (approval.type === 'payment_verification' && approval.payment_id && approved) {
+            await manager.update(Payment, { id: approval.payment_id }, { verified: true, verified_by: { id: requester.userId } as User });
+        }
+        if (approval.type === 'inventory_approval' && approval.unit_id) {
+            await manager.update(Unit, { id: approval.unit_id }, { approval_status: approved ? 'approved' : 'rejected' });
+        }
+        if (approval.type === 'lead_transfer' && approved && approval.lead && approval.target_user) {
+            await manager.update(Lead, { id: approval.lead.id }, { assigned_to: { id: approval.target_user.id } as User });
+            if (approval.lead.customer_id) {
+                await manager.update(Customers, { id: approval.lead.customer_id }, { assigned_to: { id: approval.target_user.id } as User });
+            }
+        }
+    }
+
+    async resubmit(id: string, note: string, requester: Requester) {
+        const approval = await this.approvalRepository.findOne({ where: { id }, relations: { submitted_by: true } });
+        if (!approval) throw new NotFoundException('Approval request not found');
+        if (approval.submitted_by?.id !== requester.userId) {
+            throw new ForbiddenException('Only the person who raised this request can resubmit it');
+        }
+        if (approval.status !== 'returned') throw new ConflictException('Only a returned request can be resubmitted');
+
+        approval.status = 'pending';
+        approval.requester_note = note.trim();
+        approval.resubmitted_at = new Date();
         await this.approvalRepository.save(approval);
         return this.findOne(id, requester);
     }
@@ -170,6 +219,10 @@ export class ApprovalsService {
             .leftJoinAndSelect('lead.project', 'project')
             .leftJoinAndSelect('approval.submitted_by', 'submittedBy')
             .leftJoinAndSelect('approval.reviewer', 'reviewer')
+            .leftJoinAndSelect('approval.target_user', 'targetUser')
+            .leftJoinAndSelect('approval.payment', 'payment')
+            .leftJoinAndSelect('approval.unit', 'unit')
+            .leftJoinAndSelect('unit.project', 'unitProject')
             .where('1 = 1');
         if (requester.role !== 'admin') qb.andWhere('submittedBy.id = :userId', { userId: requester.userId });
         return qb;
@@ -187,16 +240,39 @@ export class ApprovalsService {
             status: approval.status,
             due_date: approval.due_date,
             review_comment: approval.review_comment,
+            requester_note: approval.requester_note,
+            resubmitted_at: approval.resubmitted_at,
             decided_at: approval.decided_at,
             is_starred: approval.is_starred,
-            lead: {
-                id: approval.lead.id,
-                lead_no: approval.lead.lead_no,
-                client_name: approval.lead.client_name,
-                project: approval.lead.project
-                    ? { id: approval.lead.project.id, name: approval.lead.project.project_name }
-                    : null,
-            },
+            lead: approval.lead
+                ? {
+                    id: approval.lead.id,
+                    lead_no: approval.lead.lead_no,
+                    client_name: approval.lead.client_name,
+                    project: approval.lead.project
+                        ? { id: approval.lead.project.id, name: approval.lead.project.project_name }
+                        : null,
+                }
+                : null,
+            payment: approval.payment
+                ? {
+                    id: approval.payment.id,
+                    payment_no: approval.payment.payment_no,
+                    payment_type: approval.payment.payment_type,
+                    amount: Number(approval.payment.amount),
+                    method: approval.payment.method,
+                    reference: approval.payment.reference,
+                }
+                : null,
+            unit: approval.unit
+                ? {
+                    id: approval.unit.id,
+                    unit_number: approval.unit.unit_number,
+                    inventory_type: approval.unit.inventory_type,
+                    project: approval.unit.project ? { id: approval.unit.project.id, name: approval.unit.project.project_name } : null,
+                }
+                : null,
+            target_user: person(approval.target_user),
             submitted_by: person(approval.submitted_by),
             reviewer: person(approval.reviewer),
             created_at: approval.created_at,

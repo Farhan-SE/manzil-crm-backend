@@ -1,6 +1,6 @@
 import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import { ApprovalsService } from './approvals.service.js';
-import { CreateApprovalDto, DecideApprovalDto, FindApprovalsDto, StarApprovalDto } from './approval.dto.js';
+import { CreateApprovalDto, DecideApprovalDto, FindApprovalsDto, ResubmitApprovalDto, StarApprovalDto } from './approval.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
 import { AdminGuard } from '../strategies/admin.guard.js';
 import { UserSession } from '../strategies/user.decorator.js';
@@ -31,6 +31,12 @@ export class ApprovalsController {
     @Patch(':id/decision')
     decide(@Param('id', ParseUUIDPipe) id: string, @Body() dto: DecideApprovalDto, @UserSession() user: any) {
         return this.approvalsService.decide(id, dto.decision, dto.comment, user);
+    }
+
+    /** The requester answers a returned request and puts it back in the queue. */
+    @Patch(':id/resubmit')
+    resubmit(@Param('id', ParseUUIDPipe) id: string, @Body() dto: ResubmitApprovalDto, @UserSession() user: any) {
+        return this.approvalsService.resubmit(id, dto.note, user);
     }
 
     @Patch(':id/star')
