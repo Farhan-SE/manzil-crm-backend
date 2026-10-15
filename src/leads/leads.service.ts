@@ -6,6 +6,7 @@ import { User } from '../auth/user.entity.js';
 import { CreateLeadDto } from './create-lead.dto.js';
 import { UpdateLeadDto } from './update-lead.dto.js';
 import { FindLeadsDto, FindPipelineDto, LEAD_TABS, type LeadTab } from './find-leads.dto.js';
+import { applyLeadStage } from './stage-change.js';
 import { Interest } from '../interests/interest.entity.js';
 import { Category } from '../categories/category.entity.js';
 import { Source } from '../sources/source.entity.js';
@@ -60,15 +61,24 @@ export class LeadsService {
         private customerRepository: Repository<Customers>,
     ) { }
 
-    async create(dto: CreateLeadDto, createdById: number) {
+    async create(dto: CreateLeadDto, requester: { userId: number; role: string }) {
+        const isAdmin = requester.role === 'admin';
+        if (!isAdmin) dto.assigned_to_id = requester.userId;
         let assignedTo: User | null = null;
         if (dto.assigned_to_id) {
             assignedTo = await this.userRepository.findOne({ where: { id: dto.assigned_to_id } });
             if (!assignedTo) throw new BadRequestException('Assigning agent does not exist in the DB');
         }
 
-        const customer = await this.customerRepository.findOne({ where: { id: dto.customer_id } });
+        const customer = await this.customerRepository.findOne({
+            where: { id: dto.customer_id },
+            relations: { assigned_to: true, created_by: true },
+        });
         if (!customer) throw new BadRequestException('customer_id does not match an existing customer');
+        // Agents only see their own clients, so they may only open leads on those.
+        if (!isAdmin && customer.assigned_to?.id !== requester.userId && customer.created_by?.id !== requester.userId) {
+            throw new ForbiddenException('You can only add leads for your own clients');
+        }
 
         const lead = this.leadRepository.create({
             customer_id: customer.id,
@@ -83,7 +93,7 @@ export class LeadsService {
             sub_source: dto.sub_source ?? null,
             temperature: dto.temperature ?? 'WARM',
             assigned_to: assignedTo,
-            created_by: { id: createdById } as User,
+            created_by: { id: requester.userId } as User,
         });
         await this.leadRepository.save(lead);
         return this.findOne(lead.id);
@@ -125,11 +135,8 @@ export class LeadsService {
         if (source_id) baseFilter.source_id = source_id;
 
         if (query.project_id) baseFilter.project_id = query.project_id;
-        if (tab === 'watchlist' || query.starred === 'true') baseFilter.is_starred = true;
-        if (tab === 'recommended') {
-            baseFilter.temperature = 'HOT';
-            if (!stage) baseFilter.stage = Not(In(SETTLED_STAGES));
-        }
+        if (query.customer_id) baseFilter.customer_id = query.customer_id;
+        if (tab === 'favourites' || query.starred === 'true') baseFilter.is_starred = true;
 
         // Each of these is a condition on the lead's follow-ups, so they share the one `id` slot.
         const taskClauses: ((alias: string) => string)[] = [];
@@ -348,13 +355,20 @@ export class LeadsService {
         if (dto.source_id !== undefined) lead.source_id = dto.source_id;
         if (dto.sub_source !== undefined) lead.sub_source = dto.sub_source || null;
         if (dto.temperature !== undefined) lead.temperature = dto.temperature;
-        if (dto.stage !== undefined && dto.stage !== lead.stage) {
-            lead.sold_at = dto.stage === 'sold' ? new Date() : null;
-            lead.stage = dto.stage;
-        }
-
-        await this.leadRepository.save(lead);
+        const nextStage = dto.stage;
+        await this.leadRepository.manager.transaction(async (manager) => {
+            await manager.save(lead);
+            if (nextStage !== undefined) await applyLeadStage(manager, lead, nextStage, dto.payment, requester.userId);
+        });
         return this.findOne(id);
+    }
+
+    async bulkAssign(ids: string[], assignedToId: number) {
+        const assignee = await this.userRepository.findOne({ where: { id: assignedToId } });
+        if (!assignee) throw new BadRequestException('assigned_to_id does not match an existing user');
+        if (assignee.suspended || assignee.blocked) throw new BadRequestException('That staff member is deactivated');
+        const result = await this.leadRepository.update({ id: In(ids) }, { assigned_to: assignee });
+        return { updated: result.affected ?? 0 };
     }
 
     async remove(id: string) {

@@ -9,6 +9,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, type SelectQueryBuilder } from 'typeorm';
 import { FollowUp } from './follow-up.entity.js';
 import { Lead } from '../leads/lead.entity.js';
+import { applyLeadStage } from '../leads/stage-change.js';
 import { User } from '../auth/user.entity.js';
 import { CreateFollowUpDto } from './create-follow-up.dto.js';
 import { UpdateFollowUpDto } from './update-follow-up.dto.js';
@@ -123,8 +124,9 @@ export class FollowUpsService {
                 temperature: dto.temperature,
                 project_id: dto.project_id ?? unit?.project_id ?? null,
                 unit_id: unit?.id ?? null,
-                ...(dto.next_task === 'closed_won' ? { stage: 'sold', sold_at: lead.sold_at ?? new Date() } : {}),
             });
+            const stage = dto.next_task === 'closed_won' ? 'sold' : dto.stage;
+            if (stage) await applyLeadStage(manager, lead, stage, dto.payment, requester.userId);
         });
     }
 

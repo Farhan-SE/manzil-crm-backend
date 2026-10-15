@@ -1,4 +1,7 @@
-import { IsDateString, IsIn, IsNotEmpty, IsOptional, IsUUID, Matches, ValidateIf } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsDateString, IsIn, IsNotEmpty, IsOptional, IsUUID, Matches, ValidateIf, ValidateNested } from 'class-validator';
+import { LEAD_STAGES } from '../leads/lead.entity.js';
+import { StagePaymentDto } from '../leads/stage-change.js';
 
 /** Completing one of these with `received` moves the lead's unit to the mapped status. */
 export const PAYMENT_TASKS: Record<string, string> = {
@@ -69,6 +72,16 @@ export class LogTaskDto {
 
     @IsIn(['HOT', 'WARM', 'COLD'])
     temperature: string;
+
+    /** Moves the lead to this stage along with the task. Closed (Won) implies Sold. */
+    @IsOptional()
+    @IsIn(LEAD_STAGES)
+    stage?: string;
+
+    @IsOptional()
+    @ValidateNested()
+    @Type(() => StagePaymentDto)
+    payment?: StagePaymentDto;
 }
 
 export class WeekLoadDto {

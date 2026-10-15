@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { Payment } from './payment.entity.js';
 import { Lead } from '../leads/lead.entity.js';
 import { User } from '../auth/user.entity.js';
+import { assertClientHasCnic } from '../leads/stage-change.js';
 import {
     CreatePaymentDto,
     FindPaymentsDto,
@@ -155,6 +156,7 @@ export class PaymentsService {
 
         const balance = Number(payment.amount) - Number(payment.received_amount);
         if (dto.amount > balance) throw new BadRequestException('That is more than the balance still owed');
+        await assertClientHasCnic(this.paymentRepository.manager, payment.lead.customer_id);
 
         payment.received_amount = String(Number(payment.received_amount) + dto.amount);
         payment.received_at = new Date();
@@ -176,6 +178,12 @@ export class PaymentsService {
         payment.verified = true;
         payment.verified_by = { id: requester.userId } as User;
         await this.paymentRepository.save(payment);
+        // Verifying from Accounts settles the matching approval request as well.
+        await this.paymentRepository.query(
+            `UPDATE "approval" SET status = 'approved', reviewer_id = $2, decided_at = NOW(), updated_at = NOW()
+             WHERE payment_id = $1 AND status IN ('pending', 'returned')`,
+            [id, requester.userId],
+        );
         return this.findOne(id, requester);
     }
 

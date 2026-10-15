@@ -24,15 +24,22 @@ import { FindLeadsDto, FindPipelineDto, StarLeadDto } from './find-leads.dto.js'
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
 import { AdminGuard } from '../strategies/admin.guard.js';
 import { UserSession } from '../strategies/user.decorator.js';
+import { BulkAssignDto } from '../common/bulk-assign.dto.js';
 
 @Controller('leads')
 @UseGuards(JwtAuthGuard)
 export class LeadsController {
     constructor(private readonly leadsService: LeadsService) { }
-    @UseGuards(AdminGuard)
+    // Open to agents: an agent's lead is theirs, and only on a client they can see.
     @Post()
     create(@Body() dto: CreateLeadDto, @UserSession() user: any) {
-        return this.leadsService.create(dto, user.userId);
+        return this.leadsService.create(dto, user);
+    }
+
+    @UseGuards(AdminGuard)
+    @Post('bulk-assign')
+    bulkAssign(@Body() dto: BulkAssignDto) {
+        return this.leadsService.bulkAssign(dto.ids, dto.assigned_to_id);
     }
 
     @UseGuards(AdminGuard)
