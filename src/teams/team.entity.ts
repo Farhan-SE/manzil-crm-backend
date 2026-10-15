@@ -1,17 +1,21 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, Generated } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, Generated, Unique } from 'typeorm';
 
 @Entity()
+@Unique(['tenant_id', 'name'])
 export class Team {
 
     @PrimaryGeneratedColumn('uuid')
     id: string;
+
+    @Column({ type: 'uuid' })
+    tenant_id: string;
 
     // The short, human-facing ID, shown as TEAM-01.
     @Column({ type: 'int' })
     @Generated('increment')
     team_no: number;
 
-    @Column({ type: 'text', unique: true })
+    @Column({ type: 'text' })
     name: string;
 
     // The member who runs the team.

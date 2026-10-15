@@ -13,6 +13,9 @@ import { Source } from '../sources/source.entity.js';
 import { Customers } from '../customer/customer.entity.js';
 import { cell, parseCsvBuffer, type ImportResult } from '../common/csv.js';
 import { dueWindowSql } from '../follow-ups/due-windows.js';
+import { tenantId } from '../tenants/tenant-context.js';
+import { assertOwned } from '../tenants/tenant-scope.js';
+import { assertReaches, can, ownerFilter, scopedUserIds, type Requester } from '../access/access.js';
 
 const TEMPERATURES = ['HOT', 'WARM', 'COLD'];
 /** No longer in play — won or lost. */
@@ -61,24 +64,25 @@ export class LeadsService {
         private customerRepository: Repository<Customers>,
     ) { }
 
-    async create(dto: CreateLeadDto, requester: { userId: number; role: string }) {
-        const isAdmin = requester.role === 'admin';
-        if (!isAdmin) dto.assigned_to_id = requester.userId;
+    async create(dto: CreateLeadDto, requester: Requester) {
+        if (!can(requester, 'leads.assign')) dto.assigned_to_id = requester.userId;
         let assignedTo: User | null = null;
         if (dto.assigned_to_id) {
-            assignedTo = await this.userRepository.findOne({ where: { id: dto.assigned_to_id } });
+            assignedTo = await this.userRepository.findOne({ where: { id: dto.assigned_to_id, tenant_id: tenantId() } });
             if (!assignedTo) throw new BadRequestException('Assigning agent does not exist in the DB');
         }
 
         const customer = await this.customerRepository.findOne({
-            where: { id: dto.customer_id },
+            where: { id: dto.customer_id, tenant_id: tenantId() },
             relations: { assigned_to: true, created_by: true },
         });
         if (!customer) throw new BadRequestException('customer_id does not match an existing customer');
-        // Agents only see their own clients, so they may only open leads on those.
-        if (!isAdmin && customer.assigned_to?.id !== requester.userId && customer.created_by?.id !== requester.userId) {
-            throw new ForbiddenException('You can only add leads for your own clients');
+        // A lead can only be opened on a client the requester can see.
+        const clientOwners = can(requester, 'customers.view') ? await scopedUserIds(this.leadRepository.manager, requester, 'customers.view') : [];
+        if (clientOwners !== null && ![customer.assigned_to?.id, customer.created_by?.id].some((id) => id != null && clientOwners.includes(id))) {
+            throw new ForbiddenException('You can only add leads for clients you can see');
         }
+        await this.assertLookupsOwned(dto);
 
         const lead = this.leadRepository.create({
             customer_id: customer.id,
@@ -99,14 +103,15 @@ export class LeadsService {
         return this.findOne(lead.id);
     }
 
-    async findAll(query: FindLeadsDto, requester: { userId: number; role: string }) {
+    async findAll(query: FindLeadsDto, requester: Requester) {
         const page = query.page ?? 1;
         const limit = query.limit ?? 20;
         const skip = (page - 1) * limit;
+        const owners = await scopedUserIds(this.leadRepository.manager, requester, 'leads.view');
 
         const [[data, total], counts] = await Promise.all([
             this.leadRepository.findAndCount({
-                where: this.buildWhere(query, requester, query.tab ?? 'all'),
+                where: this.buildWhere(query, owners, query.tab ?? 'all'),
                 relations: { assigned_to: true, created_by: true, interest: true, category: true, source: true, project: true, customer: true, unit: true },
                 order: { lead_no: query.sort === 'asc' ? 'ASC' : 'DESC' },
                 skip,
@@ -115,7 +120,7 @@ export class LeadsService {
             // Counted per tab with the other filters applied, so the tabs match the search.
             Promise.all(
                 LEAD_TABS.map((tab) =>
-                    this.leadRepository.count({ where: this.buildWhere(query, requester, tab) }),
+                    this.leadRepository.count({ where: this.buildWhere(query, owners, tab) }),
                 ),
             ),
         ]);
@@ -124,10 +129,10 @@ export class LeadsService {
         return { data: await this.serializeMany(data), total, page, limit, tab_counts };
     }
 
-    private buildWhere(query: FindLeadsDto, requester: { userId: number; role: string }, tab: LeadTab) {
+    private buildWhere(query: FindLeadsDto, owners: number[] | null, tab: LeadTab) {
         const { search, stage, temperature, interest_id, category_id, source_id } = query;
 
-        const baseFilter: Record<string, unknown> = {};
+        const baseFilter: Record<string, unknown> = { tenant_id: tenantId() };
         if (stage) baseFilter.stage = stage;
         if (temperature) baseFilter.temperature = temperature;
         if (interest_id) baseFilter.interest_id = interest_id;
@@ -167,11 +172,9 @@ export class LeadsService {
         const budgetFilter = this.buildBudgetFilter(query.budget_min, query.budget_max);
         if (budgetFilter) baseFilter.budget = budgetFilter;
 
-        if (query.assigned_to_id) baseFilter.assigned_to = { id: query.assigned_to_id };
-        // Applied last on purpose: an agent stays locked to their own leads whatever the query asks for.
-        if (requester.role !== 'admin') {
-            baseFilter.assigned_to = { id: requester.userId };
-        }
+        // A filter on someone outside the requester's scope finds nothing rather than widening it.
+        const assignee = ownerFilter(owners, query.assigned_to_id);
+        if (assignee !== undefined) baseFilter.assigned_to = { id: assignee };
 
         if (!search) return baseFilter;
 
@@ -197,8 +200,8 @@ export class LeadsService {
     }
 
     /** The board: per stage, how many deals and how much they are worth, plus the first few deals. */
-    async findPipeline(query: FindPipelineDto, requester: { userId: number; role: string }) {
-        const where: Record<string, unknown> = {};
+    async findPipeline(query: FindPipelineDto, requester: Requester) {
+        const where: Record<string, unknown> = { tenant_id: tenantId() };
         if (query.project_id) where.project_id = query.project_id;
         if (query.starred === 'true') where.is_starred = true;
         if (query.period) {
@@ -206,11 +209,11 @@ export class LeadsService {
             where.created_at = Raw((alias) => `TO_CHAR(${alias} , 'YYYY-MM') = :period`, { period: query.period });
         }
 
+        const owners = await scopedUserIds(this.leadRepository.manager, requester, 'leads.view');
         const assignee: Record<string, unknown> = {};
-        if (query.assigned_to_id) assignee.id = query.assigned_to_id;
+        const ownerId = ownerFilter(owners, query.mine === 'true' ? requester.userId : query.assigned_to_id);
+        if (ownerId !== undefined) assignee.id = ownerId;
         if (query.region) assignee.region = query.region;
-        // Applied last on purpose: an agent stays locked to their own leads whatever the query asks for.
-        if (requester.role !== 'admin' || query.mine === 'true') assignee.id = requester.userId;
         if (Object.keys(assignee).length > 0) where.assigned_to = assignee;
 
         const relations = { assigned_to: true, created_by: true, interest: true, category: true, source: true, project: true, customer: true, unit: true };
@@ -231,6 +234,7 @@ export class LeadsService {
                 .createQueryBuilder('user')
                 .select('DISTINCT user.region', 'region')
                 .where('user.region IS NOT NULL')
+                .andWhere('user.tenant_id = :tenantId', { tenantId: tenantId() })
                 .orderBy('region', 'ASC')
                 .getRawMany<{ region: string }>(),
         ]);
@@ -278,11 +282,10 @@ export class LeadsService {
         return nextTasks;
     }
 
-    async findActive(limit: number, requester: { userId: number; role: string }) {
-        const where: Record<string, unknown> = { stage: Not(In(SETTLED_STAGES)) };
-        if (requester.role !== 'admin') {
-            where.assigned_to = { id: requester.userId };
-        }
+    async findActive(limit: number, requester: Requester) {
+        const where: Record<string, unknown> = { tenant_id: tenantId(), stage: Not(In(SETTLED_STAGES)) };
+        const owners = await scopedUserIds(this.leadRepository.manager, requester, 'leads.view');
+        if (owners !== null) where.assigned_to = { id: In(owners) };
 
         const leads = await this.leadRepository.find({
             where,
@@ -294,53 +297,51 @@ export class LeadsService {
         return this.serializeMany(leads);
     }
 
-    async findOne(id: string) {
+    /** With a requester, only a lead within their leads.view scope is found. */
+    async findOne(id: string, requester?: Requester) {
         const lead = await this.leadRepository.findOne({
-            where: { id },
+            where: { id, tenant_id: tenantId() },
             relations: { assigned_to: true, created_by: true, interest: true, category: true, source: true, project: true, customer: true, unit: true },
         });
         if (!lead) throw new NotFoundException('Lead not found');
+        if (requester) await assertReaches(this.leadRepository.manager, requester, 'leads.view', lead.assigned_to?.id, 'This lead is outside what your role can see');
         return (await this.serializeMany([lead]))[0];
     }
 
-    async setStarred(id: string, isStarred: boolean, requester: { userId: number; role: string }) {
-        const lead = await this.leadRepository.findOne({ where: { id }, relations: { assigned_to: true } });
+    async setStarred(id: string, isStarred: boolean, requester: Requester) {
+        const lead = await this.leadRepository.findOne({ where: { id, tenant_id: tenantId() }, relations: { assigned_to: true } });
         if (!lead) throw new NotFoundException('Lead not found');
-        if (requester.role !== 'admin' && lead.assigned_to?.id !== requester.userId) {
-            throw new ForbiddenException('You can only star leads assigned to you');
-        }
+        await assertReaches(this.leadRepository.manager, requester, 'leads.view', lead.assigned_to?.id, 'This lead is outside what your role can see');
 
         await this.leadRepository.update({ id }, { is_starred: isStarred });
         return { id, is_starred: isStarred };
     }
 
-    async update(id: string, dto: UpdateLeadDto, requester: { userId: number; role: string }) {
+    async update(id: string, dto: UpdateLeadDto, requester: Requester) {
         const lead = await this.leadRepository.findOne({
-            where: { id },
+            where: { id, tenant_id: tenantId() },
             relations: { assigned_to: true },
         });
         if (!lead) throw new NotFoundException('Lead not found');
 
-        if (requester.role !== 'admin') {
-            if (lead.assigned_to?.id !== requester.userId) {
-                throw new ForbiddenException('You can only edit leads assigned to you');
-            }
-            // An agent works the lead (stage, temperature); how the client is classified
-            // and who owns the lead stay with the admin. Compared against the stored value
-            // so an unchanged field in the payload isn't treated as an edit.
-            if (dto.assigned_to_id !== undefined && dto.assigned_to_id !== requester.userId) {
-                throw new ForbiddenException('Only an admin can reassign a lead');
+        await assertReaches(this.leadRepository.manager, requester, 'leads.edit', lead.assigned_to?.id, 'Your role cannot edit this lead');
+        // Working a lead (stage, temperature) is leads.edit; who owns it and how it is classified take
+        // leads.assign. Compared against the stored value so an unchanged field isn't treated as an edit.
+        if (!can(requester, 'leads.assign')) {
+            if (dto.assigned_to_id !== undefined && dto.assigned_to_id !== lead.assigned_to?.id) {
+                throw new ForbiddenException("Your role cannot reassign leads");
             }
             if (dto.interest_id !== undefined && dto.interest_id !== lead.interest_id) {
-                throw new ForbiddenException("Only an admin can change a lead's interest");
+                throw new ForbiddenException("Your role cannot change a lead's interest");
             }
             if (dto.category_id !== undefined && dto.category_id !== lead.category_id) {
-                throw new ForbiddenException("Only an admin can change a lead's category");
+                throw new ForbiddenException("Your role cannot change a lead's category");
             }
         }
 
+        await this.assertLookupsOwned(dto);
         if (dto.assigned_to_id !== undefined) {
-            const assignedTo = await this.userRepository.findOne({ where: { id: dto.assigned_to_id } });
+            const assignedTo = await this.userRepository.findOne({ where: { id: dto.assigned_to_id, tenant_id: tenantId() } });
             if (!assignedTo) throw new BadRequestException('assigned_to_id does not match an existing user');
             lead.assigned_to = assignedTo;
         }
@@ -364,15 +365,15 @@ export class LeadsService {
     }
 
     async bulkAssign(ids: string[], assignedToId: number) {
-        const assignee = await this.userRepository.findOne({ where: { id: assignedToId } });
+        const assignee = await this.userRepository.findOne({ where: { id: assignedToId, tenant_id: tenantId() } });
         if (!assignee) throw new BadRequestException('assigned_to_id does not match an existing user');
         if (assignee.suspended || assignee.blocked) throw new BadRequestException('That staff member is deactivated');
-        const result = await this.leadRepository.update({ id: In(ids) }, { assigned_to: assignee });
+        const result = await this.leadRepository.update({ id: In(ids), tenant_id: tenantId() }, { assigned_to: assignee });
         return { updated: result.affected ?? 0 };
     }
 
     async remove(id: string) {
-        const lead = await this.leadRepository.findOne({ where: { id } });
+        const lead = await this.leadRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!lead) throw new NotFoundException('Lead not found');
         // The unit keeps its status for an admin to review, but no longer points at a missing lead.
         await this.leadRepository.manager.update('Unit', { lead_id: id }, { lead_id: null });
@@ -383,9 +384,9 @@ export class LeadsService {
         const rows = parseCsvBuffer(buffer);
 
         const [interests, categories, sources] = await Promise.all([
-            this.interestRepository.find(),
-            this.categoryRepository.find(),
-            this.sourceRepository.find(),
+            this.interestRepository.find({ where: { tenant_id: tenantId() } }),
+            this.categoryRepository.find({ where: { tenant_id: tenantId() } }),
+            this.sourceRepository.find({ where: { tenant_id: tenantId() } }),
         ]);
         const interestByName = new Map(interests.map((i) => [i.name.toLowerCase(), i.id]));
         const categoryByName = new Map(categories.map((c) => [c.name.toLowerCase(), c.id]));
@@ -394,7 +395,7 @@ export class LeadsService {
         const result: ImportResult = { total: rows.length, added: 0, skipped: 0, errors: [] };
 
         // A spreadsheet has no customer id, so rows are linked to a customer that already has the number.
-        const customers = await this.customerRepository.find();
+        const customers = await this.customerRepository.find({ where: { tenant_id: tenantId() } });
         const customerIdByPhone = new Map<string, string>();
         for (const customer of customers) {
             for (const phone of [customer.contact_number, customer.alternate_contact_number]) {
@@ -445,6 +446,13 @@ export class LeadsService {
         return result;
     }
 
+    private async assertLookupsOwned(dto: { interest_id?: string | null; category_id?: string | null; source_id?: string | null }) {
+        const manager = this.leadRepository.manager;
+        await assertOwned(manager, Interest, dto.interest_id, 'interest_id');
+        await assertOwned(manager, Category, dto.category_id, 'category_id');
+        await assertOwned(manager, Source, dto.source_id, 'source_id');
+    }
+
     private buildBudgetFilter(min?: number, max?: number) {
         if (min != null && max != null) return Between(min, max);
         if (min != null) return MoreThanOrEqual(min);
@@ -476,6 +484,7 @@ export class LeadsService {
                     .select('lead.customer_id', 'customer_id')
                     .addSelect('COUNT(*)', 'count')
                     .where('lead.customer_id IN (:...customerIds)', { customerIds })
+                    .andWhere('lead.tenant_id = :tenantId', { tenantId: tenantId() })
                     .groupBy('lead.customer_id')
                     .getRawMany<{ customer_id: string; count: string }>(),
         ]);

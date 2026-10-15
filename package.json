@@ -23,7 +23,8 @@
     "typeorm": "node ./node_modules/typeorm/cli.js",
     "migration:run": "npm run build && npm run typeorm -- migration:run -d dist/data-source.js",
     "migration:run:prod": "node ./node_modules/typeorm/cli.js migration:run -d dist/data-source.js",
-    "migration:revert": "npm run build && npm run typeorm -- migration:revert -d dist/data-source.js"
+    "migration:revert": "npm run build && npm run typeorm -- migration:revert -d dist/data-source.js",
+    "super-admin:create": "npm run build && node dist/scripts/create-super-admin.js"
   },
   "dependencies": {
     "@nestjs/common": "^12.0.1",

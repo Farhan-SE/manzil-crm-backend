@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { tenantId } from '../tenants/tenant-context.js';
 import { Category } from './category.entity.js';
 import { CreateCategoryDto } from './create-category.dto.js';
 import { UpdateCategoryDto } from './update-category.dto.js';
@@ -13,7 +14,7 @@ export class CategoriesService {
     ) { }
 
     async create(dto: CreateCategoryDto) {
-        const existing = await this.categoryRepository.findOne({ where: { name: dto.name } });
+        const existing = await this.categoryRepository.findOne({ where: { name: dto.name, tenant_id: tenantId() } });
         if (existing) throw new BadRequestException('A category with this name already exists');
 
         const category = this.categoryRepository.create({ name: dto.name });
@@ -22,14 +23,14 @@ export class CategoriesService {
     }
 
     findAll() {
-        return this.categoryRepository.find({ order: { name: 'ASC' } });
+        return this.categoryRepository.find({ where: { tenant_id: tenantId() }, order: { name: 'ASC' } });
     }
 
     async update(id: string, dto: UpdateCategoryDto) {
-        const category = await this.categoryRepository.findOne({ where: { id } });
+        const category = await this.categoryRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!category) throw new NotFoundException('Category not found');
 
-        const existing = await this.categoryRepository.findOne({ where: { name: dto.name } });
+        const existing = await this.categoryRepository.findOne({ where: { name: dto.name, tenant_id: tenantId() } });
         if (existing && existing.id !== id) throw new BadRequestException('A category with this name already exists');
 
         category.name = dto.name;
@@ -38,7 +39,7 @@ export class CategoriesService {
     }
 
     async remove(id: string) {
-        const category = await this.categoryRepository.findOne({ where: { id } });
+        const category = await this.categoryRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!category) throw new NotFoundException('Category not found');
         await this.categoryRepository.remove(category);
         return { status: 'Success', message: 'Category deleted' };

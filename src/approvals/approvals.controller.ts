@@ -2,7 +2,7 @@ import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, UseGua
 import { ApprovalsService } from './approvals.service.js';
 import { CreateApprovalDto, DecideApprovalDto, FindApprovalsDto, ResubmitApprovalDto, StarApprovalDto } from './approval.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
-import { AdminGuard } from '../strategies/admin.guard.js';
+import { Can } from '../access/permission.guard.js';
 import { UserSession } from '../strategies/user.decorator.js';
 
 @Controller('approvals')
@@ -10,13 +10,13 @@ import { UserSession } from '../strategies/user.decorator.js';
 export class ApprovalsController {
     constructor(private readonly approvalsService: ApprovalsService) { }
 
-    // No AdminGuard: staff raise requests; only management decides them.
+    // Open to all staff: anyone raises a request; deciding takes approvals.decide.
     @Post()
     create(@Body() dto: CreateApprovalDto, @UserSession() user: any) {
         return this.approvalsService.create(dto, user);
     }
 
-    @UseGuards(AdminGuard)
+    @Can('approvals.decide')
     @Get('overview')
     overview() {
         return this.approvalsService.overview();
@@ -27,7 +27,7 @@ export class ApprovalsController {
         return this.approvalsService.findAll(query, user);
     }
 
-    @UseGuards(AdminGuard)
+    @Can('approvals.decide')
     @Patch(':id/decision')
     decide(@Param('id', ParseUUIDPipe) id: string, @Body() dto: DecideApprovalDto, @UserSession() user: any) {
         return this.approvalsService.decide(id, dto.decision, dto.comment, user);

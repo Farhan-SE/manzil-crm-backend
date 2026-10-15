@@ -12,11 +12,14 @@ export type TargetMetric = (typeof TARGET_METRICS)[number];
 
 /** What the team aims to reach on one measure in one calendar month. */
 @Entity()
-@Unique(['period', 'metric'])
+@Unique(['tenant_id', 'period', 'metric'])
 export class Target {
 
     @PrimaryGeneratedColumn('uuid')
     id: string;
+
+    @Column({ type: 'uuid' })
+    tenant_id: string;
 
     // The month, as YYYY-MM.
     @Column({ type: 'text' })
@@ -42,6 +45,9 @@ export class ReportRun {
 
     @PrimaryGeneratedColumn('uuid')
     id: string;
+
+    @Column({ type: 'uuid' })
+    tenant_id: string;
 
     @Column({ type: 'text' })
     report_key: string;

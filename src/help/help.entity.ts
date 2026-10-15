@@ -82,6 +82,9 @@ export class SupportTicket {
     @PrimaryGeneratedColumn('uuid')
     id: string;
 
+    @Column({ type: 'uuid' })
+    tenant_id: string;
+
     // The reference handed back to the person who raised it.
     @Column({ type: 'int' })
     @Generated('increment')

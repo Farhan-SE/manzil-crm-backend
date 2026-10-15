@@ -5,6 +5,9 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from '../auth/user.entity.js'
+import { Tenant } from '../tenants/tenant.entity.js'
+import { loadAccess } from '../access/load-access.js'
+import type { Requester } from '../access/access.js'
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
@@ -23,7 +26,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     });
   }
 
-  async validate(payload: any) {
+  async validate(payload: any): Promise<Requester> {
     const user = await this.userRepo.findOne({ where: { id: payload.id } });
 
     if (!user) throw new UnauthorizedException();
@@ -32,10 +35,20 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
     if (user.suspended) throw new UnauthorizedException('Account suspended');
 
+    if (user.tenant_id) {
+      const tenant = await this.userRepo.manager.findOne(Tenant, { where: { id: user.tenant_id } });
+      if (tenant?.status !== 'active') throw new UnauthorizedException('Company account suspended');
+    }
+
+    const { role, permissions } = await loadAccess(this.userRepo.manager, user.role_id);
     return {
-      userId: user.id,
-      email:  user.email,
-      role:   user.user_role,
+      userId:      user.id,
+      email:       user.email,
+      role:        user.user_role,
+      tenantId:    user.tenant_id,
+      roleId:      role?.id ?? null,
+      roleName:    role?.name ?? null,
+      permissions,
     };
   }
 }

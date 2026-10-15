@@ -23,6 +23,9 @@ export class Unit {
     id: string;
 
     @Column({ type: 'uuid' })
+    tenant_id: string;
+
+    @Column({ type: 'uuid' })
     project_id: string;
 
     @ManyToOne(() => PartnerProject, { onDelete: 'CASCADE' })

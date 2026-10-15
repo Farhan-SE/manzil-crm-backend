@@ -20,6 +20,9 @@ export class FollowUp {
     @PrimaryGeneratedColumn('uuid')
     id: string;
 
+    @Column({ type: 'uuid' })
+    tenant_id: string;
+
     // The short, human-facing task ID, shown as TSK-<n>.
     @Column({ type: 'int' })
     @Generated('increment')

@@ -2,12 +2,14 @@ import { Body, Controller, Get, Param, Put, Query, UseGuards } from '@nestjs/com
 import { ReportsService } from './reports.service.js';
 import { ReportQueryDto, SetTargetDto } from './report.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
-import { AdminGuard } from '../strategies/admin.guard.js';
+import { Can } from '../access/permission.guard.js';
 import { UserSession } from '../strategies/user.decorator.js';
 
-// Reports span every lead, unit and payment, so the whole controller is management-only.
+// Reports span every lead, unit and payment, so they take their own permission rather than a scope.
+// Can sits above UseGuards so the JWT guard runs first and the user is known when permissions are checked.
 @Controller('reports')
-@UseGuards(JwtAuthGuard, AdminGuard)
+@Can('reports.view')
+@UseGuards(JwtAuthGuard)
 export class ReportsController {
     constructor(private readonly reportsService: ReportsService) { }
 
@@ -21,6 +23,7 @@ export class ReportsController {
         return this.reportsService.targets(query.period);
     }
 
+    @Can('targets.manage')
     @Put('targets')
     setTarget(@Body() dto: SetTargetDto) {
         return this.reportsService.setTarget(dto.period, dto.metric, dto.value);

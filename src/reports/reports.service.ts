@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ReportRun, Target, TARGET_METRICS, type TargetMetric } from './report.entity.js';
 import { ReportQueryDto } from './report.dto.js';
+import { tenantId } from '../tenants/tenant-context.js';
 
 type Cell = string | number | null;
 type Filters = { from: string; to: string; projectId: string | null; region: string | null; staffId: number | null };
@@ -12,7 +13,7 @@ type ReportDefinition = {
     description: string;
     category: 'sales' | 'inventory' | 'collections' | 'staff';
     columns: string[];
-    /** `$1` from, `$2` to (both inclusive dates), `$3` project, `$4` region, `$5` staff — every query takes all five. */
+    /** `$1` from, `$2` to (both inclusive dates), `$3` project, `$4` region, `$5` staff, `$6` company — every query takes all six. */
     sql: string;
 };
 
@@ -40,7 +41,7 @@ const REPORTS: ReportDefinition[] = [
               FROM "lead" l
               LEFT JOIN "partner_project" p ON p.id = l.project_id
               LEFT JOIN "user" u ON u.id = l.assigned_to_id
-              WHERE ${UNUSED} AND ${BY_PROJECT} AND ${BY_STAFF} AND ${BY_REGION}
+              WHERE ${UNUSED} AND l.tenant_id = $6 AND ${BY_PROJECT} AND ${BY_STAFF} AND ${BY_REGION}
               GROUP BY 1
               ORDER BY value DESC, project`,
     },
@@ -53,7 +54,7 @@ const REPORTS: ReportDefinition[] = [
         sql: `SELECT l.stage, COUNT(*) AS deals, COALESCE(SUM(l.budget), 0) AS value
               FROM "lead" l
               LEFT JOIN "user" u ON u.id = l.assigned_to_id
-              WHERE ${UNUSED} AND ${BY_PROJECT} AND ${BY_STAFF} AND ${BY_REGION}
+              WHERE ${UNUSED} AND l.tenant_id = $6 AND ${BY_PROJECT} AND ${BY_STAFF} AND ${BY_REGION}
               GROUP BY l.stage
               ORDER BY deals DESC`,
     },
@@ -69,7 +70,7 @@ const REPORTS: ReportDefinition[] = [
               FROM "lead" l
               LEFT JOIN "source" s ON s.id = l.source_id
               LEFT JOIN "user" u ON u.id = l.assigned_to_id
-              WHERE ${UNUSED} AND ${inRange('l.created_at')} AND ${BY_PROJECT} AND ${BY_STAFF} AND ${BY_REGION}
+              WHERE ${UNUSED} AND l.tenant_id = $6 AND ${inRange('l.created_at')} AND ${BY_PROJECT} AND ${BY_STAFF} AND ${BY_REGION}
               GROUP BY 1
               ORDER BY inquiries DESC`,
     },
@@ -88,7 +89,7 @@ const REPORTS: ReportDefinition[] = [
                      COUNT(n.id) FILTER (WHERE n.status = 'sold') AS sold
               FROM "partner_project" p
               LEFT JOIN "unit" n ON n.project_id = p.id AND n.approval_status = 'approved'
-              WHERE ${UNUSED} AND ($3::uuid IS NULL OR p.id = $3)
+              WHERE ${UNUSED} AND p.tenant_id = $6 AND ($3::uuid IS NULL OR p.id = $3)
               GROUP BY p.project_name
               ORDER BY p.project_name`,
     },
@@ -101,7 +102,7 @@ const REPORTS: ReportDefinition[] = [
         sql: `SELECT p.project_name, n.unit_number, n.unit_type, n.floor, n.beds, n.area_sqft, n.price, n.status
               FROM "unit" n
               JOIN "partner_project" p ON p.id = n.project_id
-              WHERE ${UNUSED} AND n.approval_status = 'approved' AND ($3::uuid IS NULL OR p.id = $3)
+              WHERE ${UNUSED} AND n.tenant_id = $6 AND n.approval_status = 'approved' AND ($3::uuid IS NULL OR p.id = $3)
               ORDER BY p.project_name, n.unit_number`,
     },
     {
@@ -116,7 +117,7 @@ const REPORTS: ReportDefinition[] = [
               FROM "payment" y
               JOIN "lead" l ON l.id = y.lead_id
               LEFT JOIN "partner_project" p ON p.id = l.project_id
-              WHERE ${UNUSED} AND y.received_amount < y.amount AND ${BY_PROJECT} AND ${BY_STAFF}
+              WHERE ${UNUSED} AND y.tenant_id = $6 AND y.received_amount < y.amount AND ${BY_PROJECT} AND ${BY_STAFF}
               ORDER BY y.due_date`,
     },
     {
@@ -130,7 +131,7 @@ const REPORTS: ReportDefinition[] = [
               FROM "payment" y
               JOIN "lead" l ON l.id = y.lead_id
               LEFT JOIN "partner_project" p ON p.id = l.project_id
-              WHERE ${UNUSED} AND ${inRange('y.received_at')} AND ${BY_PROJECT} AND ${BY_STAFF} AND TRUE
+              WHERE ${UNUSED} AND y.tenant_id = $6 AND ${inRange('y.received_at')} AND ${BY_PROJECT} AND ${BY_STAFF} AND TRUE
               ORDER BY y.received_at`,
     },
     {
@@ -149,18 +150,18 @@ const REPORTS: ReportDefinition[] = [
               FROM "user" u
               LEFT JOIN "lead" l ON l.assigned_to_id = u.id AND ${BY_PROJECT} AND ${BY_STAFF}
               LEFT JOIN "follow_up" f ON f.lead_id = l.id
-              WHERE ${UNUSED} AND u.blocked = false AND ${BY_REGION} AND ($5::int IS NULL OR u.id = $5)
+              WHERE ${UNUSED} AND u.tenant_id = $6 AND u.blocked = false AND ${BY_REGION} AND ($5::int IS NULL OR u.id = $5)
               GROUP BY u.id, u.first_name, u.last_name, u.team
               ORDER BY leads DESC, staff`,
     },
 ];
 
-/** What was actually reached on each target metric in a month. `$1` is the period. */
+/** What was actually reached on each target metric in a month. `$1` is the period, `$2` the company. */
 const ACTUALS: Record<TargetMetric, string> = {
-    booked_sales: `SELECT COALESCE(SUM(budget), 0) AS value FROM "lead" WHERE stage = 'sold' AND TO_CHAR(sold_at, 'YYYY-MM') = $1`,
-    site_visits: `SELECT COUNT(*) AS value FROM "follow_up" WHERE completed AND task_type = 'site_visit' AND TO_CHAR(completed_at, 'YYYY-MM') = $1`,
-    collections: `SELECT COALESCE(SUM(received_amount), 0) AS value FROM "payment" WHERE TO_CHAR(received_at, 'YYYY-MM') = $1`,
-    unit_sales: `SELECT COUNT(*) AS value FROM "lead" WHERE stage = 'sold' AND TO_CHAR(sold_at, 'YYYY-MM') = $1`,
+    booked_sales: `SELECT COALESCE(SUM(budget), 0) AS value FROM "lead" WHERE tenant_id = $2 AND stage = 'sold' AND TO_CHAR(sold_at, 'YYYY-MM') = $1`,
+    site_visits: `SELECT COUNT(*) AS value FROM "follow_up" WHERE tenant_id = $2 AND completed AND task_type = 'site_visit' AND TO_CHAR(completed_at, 'YYYY-MM') = $1`,
+    collections: `SELECT COALESCE(SUM(received_amount), 0) AS value FROM "payment" WHERE tenant_id = $2 AND TO_CHAR(received_at, 'YYYY-MM') = $1`,
+    unit_sales: `SELECT COUNT(*) AS value FROM "lead" WHERE tenant_id = $2 AND stage = 'sold' AND TO_CHAR(sold_at, 'YYYY-MM') = $1`,
 };
 
 function currentPeriod() {
@@ -181,7 +182,9 @@ export class ReportsService {
         const runs: { report_key: string; period: string; generated_at: Date }[] = await this.runRepository.query(
             `SELECT DISTINCT ON (report_key) report_key, period, generated_at
              FROM "report_run"
+             WHERE tenant_id = $1
              ORDER BY report_key, generated_at DESC`,
+            [tenantId()],
         );
         const lastRun = new Map(runs.map((run) => [run.report_key, run]));
         return REPORTS.map(({ key, name, description, category }) => ({
@@ -216,6 +219,7 @@ export class ReportsService {
             filters.projectId,
             filters.region,
             filters.staffId,
+            tenantId(),
         ]);
         const period = `${filters.from}..${filters.to}`;
         await this.runRepository.save(this.runRepository.create({ report_key: key, period, generated_by_id: userId }));
@@ -232,10 +236,10 @@ export class ReportsService {
     /** Each target metric for a month: what was aimed for (null if nothing is set) and what was reached. */
     async targets(period = currentPeriod()) {
         const [targets, actuals] = await Promise.all([
-            this.targetRepository.find({ where: { period } }),
+            this.targetRepository.find({ where: { period, tenant_id: tenantId() } }),
             Promise.all(
                 TARGET_METRICS.map(
-                    (metric) => this.targetRepository.query(ACTUALS[metric], [period]) as Promise<{ value: string }[]>,
+                    (metric) => this.targetRepository.query(ACTUALS[metric], [period, tenantId()]) as Promise<{ value: string }[]>,
                 ),
             ),
         ]);
@@ -250,7 +254,7 @@ export class ReportsService {
     }
 
     async setTarget(period: string, metric: string, value: number) {
-        const existing = await this.targetRepository.findOne({ where: { period, metric } });
+        const existing = await this.targetRepository.findOne({ where: { period, metric, tenant_id: tenantId() } });
         await this.targetRepository.save(
             existing
                 ? Object.assign(existing, { value: String(value) })

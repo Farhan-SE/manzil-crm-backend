@@ -18,6 +18,9 @@ export class PartnerProject {
     @PrimaryGeneratedColumn('uuid')
     id: string;
 
+    @Column({ type: 'uuid' })
+    tenant_id: string;
+
     @Column()
     project_name: string;
 

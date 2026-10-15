@@ -1,7 +1,6 @@
 import {
     BadRequestException,
     ConflictException,
-    ForbiddenException,
     Injectable,
     NotFoundException,
 } from '@nestjs/common';
@@ -20,8 +19,9 @@ import { dueWindowSql } from './due-windows.js';
 import { LogTaskDto, NEXT_TASKS, PAYMENT_TASKS, TERMINAL_NEXT_TASKS } from './log-task.dto.js';
 import { Unit, UNIT_STATUSES } from '../units/unit.entity.js';
 import { PartnerProject } from '../partner-projects/partner-project.entity.js';
+import { tenantId } from '../tenants/tenant-context.js';
+import { assertReaches, narrowToOwners, scopedUserIds, type Requester } from '../access/access.js';
 
-type Requester = { userId: number; role: string };
 
 type LastTask = { text: string; task_type: string | null; sub_task: string | null; at: Date | null };
 
@@ -35,7 +35,7 @@ export class FollowUpsService {
     ) { }
 
     async create(dto: CreateFollowUpDto, createdById: number) {
-        const lead = await this.leadRepository.findOne({ where: { id: dto.lead_id } });
+        const lead = await this.leadRepository.findOne({ where: { id: dto.lead_id, tenant_id: tenantId() } });
         if (!lead) throw new NotFoundException('Lead not found');
 
         const followUp = this.followUpRepository.create({
@@ -51,23 +51,21 @@ export class FollowUpsService {
     /** Records the task just done, schedules the next one and updates the lead — all or nothing. */
     async logTask(dto: LogTaskDto, requester: Requester) {
         const lead = await this.leadRepository.findOne({
-            where: { id: dto.lead_id },
+            where: { id: dto.lead_id, tenant_id: tenantId() },
             relations: { assigned_to: true },
         });
         if (!lead) throw new NotFoundException('Lead not found');
-        if (requester.role !== 'admin' && lead.assigned_to?.id !== requester.userId) {
-            throw new ForbiddenException('You can only add tasks to leads assigned to you');
-        }
+        await assertReaches(this.followUpRepository.manager, requester, 'leads.edit', lead.assigned_to?.id, 'Your role cannot add tasks to this lead');
 
         await this.followUpRepository.manager.transaction(async (manager) => {
             if (dto.project_id) {
-                const project = await manager.findOne(PartnerProject, { where: { id: dto.project_id } });
+                const project = await manager.findOne(PartnerProject, { where: { id: dto.project_id, tenant_id: tenantId() } });
                 if (!project) throw new BadRequestException('project_id does not match an existing project');
             }
 
             let unit: Unit | null = null;
             if (dto.unit_id) {
-                unit = await manager.findOne(Unit, { where: { id: dto.unit_id } });
+                unit = await manager.findOne(Unit, { where: { id: dto.unit_id, tenant_id: tenantId() } });
                 if (!unit) throw new BadRequestException('unit_id does not match an existing unit');
                 if (dto.project_id && unit.project_id !== dto.project_id) {
                     throw new BadRequestException('That unit does not belong to the selected project');
@@ -138,12 +136,11 @@ export class FollowUpsService {
             .select("TO_CHAR(followUp.due_date, 'YYYY-MM-DD')", 'date')
             .addSelect('COUNT(*)', 'count')
             .where('followUp.completed = false')
+            .andWhere('followUp.tenant_id = :tenantId', { tenantId: tenantId() })
             .andWhere("followUp.due_date >= CAST(:from AS date) AND followUp.due_date < CAST(:from AS date) + INTERVAL '7 days'", { from })
             .groupBy('followUp.due_date');
 
-        if (requester.role !== 'admin') {
-            qb.andWhere('lead.assigned_to_id = :userId', { userId: requester.userId });
-        }
+        narrowToOwners(qb, 'lead.assigned_to_id', await scopedUserIds(this.followUpRepository.manager, requester, 'leads.view'));
 
         const rows = await qb.getRawMany<{ date: string; count: string }>();
         return rows.map((row) => ({ date: row.date, count: Number(row.count) }));
@@ -178,11 +175,7 @@ export class FollowUpsService {
                 .addOrderBy('followUp.due_time', 'ASC');
         }
 
-        if (requester.role !== 'admin') {
-            qb.andWhere('assignedTo.id = :userId', { userId: requester.userId });
-        } else if (query.assigned_to_id) {
-            qb.andWhere('assignedTo.id = :assignedToId', { assignedToId: query.assigned_to_id });
-        }
+        narrowToOwners(qb, 'assignedTo.id', await scopedUserIds(this.followUpRepository.manager, requester, 'leads.view'), query.assigned_to_id);
 
         if (query.search) {
             qb.andWhere('(followUp.text ILIKE :search OR lead.client_name ILIKE :search)', {
@@ -199,14 +192,10 @@ export class FollowUpsService {
     /** Everything due today — completed ones included, so the day's list stays a full record. */
     async findToday(query: FindLeadsDto, requester: Requester) {
         const qb = this.listQuery()
-            .where('followUp.due_date = CURRENT_DATE')
+            .andWhere('followUp.due_date = CURRENT_DATE')
             .orderBy('followUp.due_time', 'ASC');
 
-        if (requester.role !== 'admin') {
-            qb.andWhere('assignedTo.id = :userId', { userId: requester.userId });
-        } else if (query.assigned_to_id) {
-            qb.andWhere('assignedTo.id = :assignedToId', { assignedToId: query.assigned_to_id });
-        }
+        narrowToOwners(qb, 'assignedTo.id', await scopedUserIds(this.followUpRepository.manager, requester, 'leads.view'), query.assigned_to_id);
 
         if (query.search) {
             qb.andWhere('(followUp.text ILIKE :search OR lead.client_name ILIKE :search)', {
@@ -226,7 +215,7 @@ export class FollowUpsService {
     }
 
     async update(id: string, dto: UpdateFollowUpDto) {
-        const followUp = await this.followUpRepository.findOne({ where: { id } });
+        const followUp = await this.followUpRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!followUp) throw new NotFoundException('Follow-up not found');
 
         if (dto.text !== undefined) followUp.text = dto.text;
@@ -239,14 +228,12 @@ export class FollowUpsService {
 
     async setCompleted(id: string, completed: boolean, requester: Requester) {
         const followUp = await this.followUpRepository.findOne({
-            where: { id },
+            where: { id, tenant_id: tenantId() },
             relations: { lead: { assigned_to: true } },
         });
         if (!followUp) throw new NotFoundException('Follow-up not found');
 
-        if (requester.role !== 'admin' && followUp.lead.assigned_to?.id !== requester.userId) {
-            throw new ForbiddenException('You can only update follow-ups for leads assigned to you');
-        }
+        await assertReaches(this.followUpRepository.manager, requester, 'leads.edit', followUp.lead.assigned_to?.id, 'Your role cannot update tasks on this lead');
 
         followUp.completed = completed;
         followUp.completed_at = completed ? new Date() : null;
@@ -260,9 +247,10 @@ export class FollowUpsService {
         const windows = dueWindowSql('followUp');
         const direction = query.sort === 'desc' ? 'DESC' : 'ASC';
 
+        const owners = await scopedUserIds(this.followUpRepository.manager, requester, 'leads.view');
         const inWindow = (window: TodoWindow) => {
-            const qb = this.listQuery().where('followUp.completed = false');
-            this.applyTaskFilters(qb, query, requester);
+            const qb = this.listQuery().andWhere('followUp.completed = false');
+            this.applyTaskFilters(qb, query, owners);
             if (query.due_date) qb.andWhere('followUp.due_date = :dueDate', { dueDate: query.due_date });
             if (query.due_before) qb.andWhere('followUp.due_date < :dueBefore', { dueBefore: query.due_before });
             if (query.due_after) qb.andWhere('followUp.due_date > :dueAfter', { dueAfter: query.due_after });
@@ -313,9 +301,10 @@ export class FollowUpsService {
             open: `followUp.completed = false AND NOT (${late}) AND followUp.status <> 'in_progress'`,
         };
 
+        const owners = await scopedUserIds(this.followUpRepository.manager, requester, 'leads.view');
         const inTab = (tab: TaskTab) => {
             const qb = this.listQuery();
-            this.applyTaskFilters(qb, query, requester);
+            this.applyTaskFilters(qb, query, owners);
             if (query.due_from) qb.andWhere('followUp.due_date >= :dueFrom', { dueFrom: query.due_from });
             if (query.due_to) qb.andWhere('followUp.due_date <= :dueTo', { dueTo: query.due_to });
             if (tab !== 'all') qb.andWhere(tabSql[tab]);
@@ -367,14 +356,12 @@ export class FollowUpsService {
     /** Admins may touch any follow-up; an agent only the ones on leads assigned to them. */
     private async findOwned(id: string, requester: Requester) {
         const followUp = await this.followUpRepository.findOne({
-            where: { id },
+            where: { id, tenant_id: tenantId() },
             relations: { lead: { assigned_to: true } },
         });
         if (!followUp) throw new NotFoundException('Follow-up not found');
 
-        if (requester.role !== 'admin' && followUp.lead.assigned_to?.id !== requester.userId) {
-            throw new ForbiddenException('You can only update follow-ups for leads assigned to you');
-        }
+        await assertReaches(this.followUpRepository.manager, requester, 'leads.edit', followUp.lead.assigned_to?.id, 'Your role cannot update tasks on this lead');
         return followUp;
     }
 
@@ -386,20 +373,18 @@ export class FollowUpsService {
             .leftJoinAndSelect('lead.assigned_to', 'assignedTo')
             .leftJoinAndSelect('lead.project', 'project')
             .leftJoinAndSelect('lead.interest', 'interest')
-            .leftJoinAndSelect('lead.customer', 'customer');
+            .leftJoinAndSelect('lead.customer', 'customer')
+            // Callers add their own conditions with andWhere; a later where() would drop this one.
+            .where('followUp.tenant_id = :tenantId', { tenantId: tenantId() });
     }
 
     private applyTaskFilters(
         qb: SelectQueryBuilder<FollowUp>,
         query: { assigned_to_id?: number; task_type?: string; starred?: string },
-        requester: Requester,
+        owners: number[] | null,
     ) {
-        // An agent stays locked to their own leads whatever the query asks for.
-        if (requester.role !== 'admin') {
-            qb.andWhere('assignedTo.id = :userId', { userId: requester.userId });
-        } else if (query.assigned_to_id) {
-            qb.andWhere('assignedTo.id = :assignedToId', { assignedToId: query.assigned_to_id });
-        }
+        // A filter on someone outside the scope finds nothing rather than widening it.
+        narrowToOwners(qb, 'assignedTo.id', owners, query.assigned_to_id);
         if (query.task_type) qb.andWhere('followUp.task_type = :taskType', { taskType: query.task_type });
         if (query.starred === 'true') qb.andWhere('followUp.is_starred = true');
     }

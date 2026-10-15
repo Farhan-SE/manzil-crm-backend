@@ -2,8 +2,9 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Lead } from '../leads/lead.entity.js';
+import { tenantId } from '../tenants/tenant-context.js';
+import { scopedUserIds, type Requester } from '../access/access.js';
 
-type Requester = { userId: number; role: string };
 
 /** The task types listed on the dashboard even when nothing is due for them. */
 const BOARD_TASKS = [
@@ -38,16 +39,16 @@ export class PerformanceService {
 
     /**
      * The staff dashboard for one day. Month-to-date figures run from the 1st of that day's
-     * month up to and including the day. Admins see everyone's leads; an agent sees their own.
+     * month up to and including the day. leads.view decides whose leads count.
      */
     async performance(requester: Requester, date = today()) {
-        const owner = requester.role === 'admin' ? null : requester.userId;
+        const owners = await scopedUserIds(this.leadRepository.manager, requester, 'leads.view');
         const run = <T>(sql: string, params: unknown[]) => this.leadRepository.query(sql, params) as Promise<T[]>;
-        // `$1` owner (null for everyone), `$2` the day.
-        const args = [owner, date];
+        // `$1` the lead owners in scope (null for everyone), `$2` the day, `$3` the company.
+        const args = [owners, date, tenantId()];
         const mtd = (column: string) =>
             `(${column} ${ZONE})::date BETWEEN DATE_TRUNC('month', $2::date)::date AND $2::date`;
-        const mine = '($1::int IS NULL OR l.assigned_to_id = $1)';
+        const mine = '($1::int[] IS NULL OR l.assigned_to_id = ANY($1)) AND l.tenant_id = $3';
 
         const [profile, payments, sales, target, tasks, funnel, hours, ledger, pending] = await Promise.all([
             run<{ first_name: string; last_name: string; team: string | null; office: string | null; joined_on: string | null }>(
@@ -70,8 +71,8 @@ export class PerformanceService {
                 args,
             ),
             run<{ value: string }>(
-                `SELECT value FROM "target" WHERE metric = 'unit_sales' AND period = TO_CHAR($1::date, 'YYYY-MM')`,
-                [date],
+                `SELECT value FROM "target" WHERE tenant_id = $2 AND metric = 'unit_sales' AND period = TO_CHAR($1::date, 'YYYY-MM')`,
+                [date, tenantId()],
             ),
             run<{ bucket: string; task_type: string | null; count: string }>(
                 `SELECT CASE WHEN f.due_date < $2::date THEN 'overdue' WHEN f.due_date = $2::date THEN 'today' ELSE 'upcoming' END AS bucket,
@@ -82,22 +83,22 @@ export class PerformanceService {
                 args,
             ),
             run<FunnelRow>(
-                `SELECT CASE WHEN f.task_type = ANY($3) THEN 'calls' ELSE 'meetings' END AS kind,
+                `SELECT CASE WHEN f.task_type = ANY($4) THEN 'calls' ELSE 'meetings' END AS kind,
                         COUNT(*) AS total, COUNT(DISTINCT f.lead_id) AS leads,
                         COUNT(*) FILTER (WHERE f.sub_task <> 'not_answered') AS connected,
                         COUNT(DISTINCT f.lead_id) FILTER (WHERE f.sub_task <> 'not_answered') AS connected_leads,
                         COUNT(*) FILTER (WHERE f.sub_task = 'interested') AS qualified,
                         COUNT(DISTINCT f.lead_id) FILTER (WHERE f.sub_task = 'interested') AS qualified_leads
                  FROM "follow_up" f JOIN "lead" l ON l.id = f.lead_id
-                 WHERE ${mine} AND f.completed AND f.task_type = ANY($3 || $4) AND ${mtd('f.completed_at')}
+                 WHERE ${mine} AND f.completed AND f.task_type = ANY($4 || $5) AND ${mtd('f.completed_at')}
                  GROUP BY 1`,
                 [...args, CALL_TASKS, MEETING_TASKS],
             ),
             run<{ hour: number; calls: string; uqc: string; umet: string }>(
                 `SELECT EXTRACT(HOUR FROM f.completed_at ${ZONE})::int AS hour,
-                        COUNT(*) FILTER (WHERE f.task_type = ANY($3)) AS calls,
-                        COUNT(DISTINCT f.lead_id) FILTER (WHERE f.task_type = ANY($3) AND f.sub_task = 'interested') AS uqc,
-                        COUNT(DISTINCT f.lead_id) FILTER (WHERE f.task_type = ANY($4)) AS umet
+                        COUNT(*) FILTER (WHERE f.task_type = ANY($4)) AS calls,
+                        COUNT(DISTINCT f.lead_id) FILTER (WHERE f.task_type = ANY($4) AND f.sub_task = 'interested') AS uqc,
+                        COUNT(DISTINCT f.lead_id) FILTER (WHERE f.task_type = ANY($5)) AS umet
                  FROM "follow_up" f JOIN "lead" l ON l.id = f.lead_id
                  WHERE ${mine} AND f.completed AND (f.completed_at ${ZONE})::date = $2::date
                  GROUP BY 1`,
@@ -118,9 +119,10 @@ export class PerformanceService {
                  LEFT JOIN "partner_project" pr ON pr.id = l.project_id
                  LEFT JOIN "unit" un ON un.id = l.unit_id
                  LEFT JOIN "user" u ON u.id = l.assigned_to_id
-                 WHERE ${mine} AND p.received_amount < p.amount AND p.payment_type IN ('token', 'down_payment')
+                 WHERE ($1::int[] IS NULL OR l.assigned_to_id = ANY($1)) AND l.tenant_id = $2
+                   AND p.received_amount < p.amount AND p.payment_type IN ('token', 'down_payment')
                  ORDER BY p.due_date ASC`,
-                [owner],
+                [owners, tenantId()],
             ),
         ]);
 
@@ -157,7 +159,7 @@ export class PerformanceService {
 
         return {
             date,
-            scope: owner === null ? 'system' : 'own',
+            scope: owners === null ? 'system' : requester.permissions['leads.view'],
             profile: profile[0] ?? null,
             cards: {
                 tokens: received('receive_token_payment'),

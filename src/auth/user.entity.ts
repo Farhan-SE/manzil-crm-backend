@@ -6,6 +6,10 @@ export class User {
     @PrimaryGeneratedColumn('increment')
     id: number;
 
+    // Null only for platform super admins, who belong to no company.
+    @Column({ type: 'uuid', nullable: true })
+    tenant_id: string | null;
+
     @Column()
     first_name: string;
 
@@ -18,8 +22,13 @@ export class User {
     @Column()
     password: string;
 
+    // 'super_admin' marks a platform admin. For company staff it mirrors role_id ('admin' for the
+    // system Admin role, 'agent' otherwise) so older clients keep working; access comes from the role.
     @Column({ default: 'agent' })
     user_role: string;
+
+    @Column({ type: 'uuid', nullable: true })
+    role_id: string | null;
 
     @Column({ type: 'uuid', nullable: true })
     team_id: string | null;

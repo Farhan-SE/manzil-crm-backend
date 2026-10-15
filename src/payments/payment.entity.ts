@@ -20,6 +20,9 @@ export class Payment {
     @PrimaryGeneratedColumn('uuid')
     id: string;
 
+    @Column({ type: 'uuid' })
+    tenant_id: string;
+
     // The short, human-facing reference, shown as PAY-1036.
     @Column({ type: 'int' })
     @Generated('increment')

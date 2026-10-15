@@ -22,7 +22,7 @@ import { CreateLeadDto } from './create-lead.dto.js';
 import { UpdateLeadDto } from './update-lead.dto.js';
 import { FindLeadsDto, FindPipelineDto, StarLeadDto } from './find-leads.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
-import { AdminGuard } from '../strategies/admin.guard.js';
+import { Can } from '../access/permission.guard.js';
 import { UserSession } from '../strategies/user.decorator.js';
 import { BulkAssignDto } from '../common/bulk-assign.dto.js';
 
@@ -30,19 +30,20 @@ import { BulkAssignDto } from '../common/bulk-assign.dto.js';
 @UseGuards(JwtAuthGuard)
 export class LeadsController {
     constructor(private readonly leadsService: LeadsService) { }
-    // Open to agents: an agent's lead is theirs, and only on a client they can see.
+    // Without leads.assign the lead is the creator's own, and only on a client they can see.
+    @Can('leads.create')
     @Post()
     create(@Body() dto: CreateLeadDto, @UserSession() user: any) {
         return this.leadsService.create(dto, user);
     }
 
-    @UseGuards(AdminGuard)
+    @Can('leads.assign')
     @Post('bulk-assign')
     bulkAssign(@Body() dto: BulkAssignDto) {
         return this.leadsService.bulkAssign(dto.ids, dto.assigned_to_id);
     }
 
-    @UseGuards(AdminGuard)
+    @Can('leads.import')
     @Post('import')
     @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
     importCsv(@UploadedFile() file: UploadedCsv, @UserSession() user: any) {
@@ -69,11 +70,11 @@ export class LeadsController {
     }
 
     @Get(':id')
-    findOne(@Param('id', ParseUUIDPipe) id: string) {
-        return this.leadsService.findOne(id);
+    findOne(@Param('id', ParseUUIDPipe) id: string, @UserSession() user: any) {
+        return this.leadsService.findOne(id, user);
     }
 
-    // No AdminGuard: the service allows the lead's own agent through, admins for any lead.
+    // No permission guard: the service checks leads.edit against the lead's owner.
     @Patch(':id')
     update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateLeadDto, @UserSession() user: any) {
         return this.leadsService.update(id, dto, user);
@@ -84,7 +85,7 @@ export class LeadsController {
         return this.leadsService.setStarred(id, dto.is_starred, user);
     }
 
-    @UseGuards(AdminGuard)
+    @Can('leads.delete')
     @Delete(':id')
      async remove(@Param('id', ParseUUIDPipe) id: string) {
         await this.leadsService.remove(id);

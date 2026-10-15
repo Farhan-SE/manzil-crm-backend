@@ -8,8 +8,9 @@ import { Customers } from '../customer/customer.entity.js';
 import { Lead } from '../leads/lead.entity.js';
 import { User } from '../auth/user.entity.js';
 import { APPROVAL_TABS, CreateApprovalDto, FindApprovalsDto, type ApprovalTab } from './approval.dto.js';
+import { tenantId } from '../tenants/tenant-context.js';
+import { narrowToOwners, scopedUserIds, type Requester } from '../access/access.js';
 
-type Requester = { userId: number; role: string };
 
 const TAB_STATUSES: Record<ApprovalTab, string[]> = {
     pending: ['pending'],
@@ -31,14 +32,14 @@ export class ApprovalsService {
     ) { }
 
     async create(dto: CreateApprovalDto, requester: Requester) {
-        const lead = await this.leadRepository.findOne({ where: { id: dto.lead_id }, relations: { assigned_to: true } });
+        const lead = await this.leadRepository.findOne({ where: { id: dto.lead_id, tenant_id: tenantId() }, relations: { assigned_to: true } });
         if (!lead) throw new BadRequestException('lead_id does not match an existing lead');
         if (dto.type === 'inventory_approval') {
             throw new BadRequestException('Inventory approvals are raised by adding a unit');
         }
         let target: User | null = null;
         if (dto.type === 'lead_transfer') {
-            target = await this.userRepository.findOne({ where: { id: dto.target_user_id } });
+            target = await this.userRepository.findOne({ where: { id: dto.target_user_id, tenant_id: tenantId() } });
             if (!target) throw new BadRequestException('target_user_id does not match an existing user');
             if (target.id === lead.assigned_to?.id) throw new BadRequestException('The lead is already with that staff member');
         }
@@ -54,16 +55,17 @@ export class ApprovalsService {
                 target_user: target,
             }),
         );
-        return this.findOne(approval.id, requester);
+        return this.findOne(approval.id);
     }
 
-    /** Paged, with a count for each tab. Admins see every request; an agent only their own. */
+    /** Paged, with a count for each tab. approvals.view scopes it by who raised the request. */
     async findAll(query: FindApprovalsDto, requester: Requester) {
         const page = query.page ?? 1;
         const limit = query.limit ?? 10;
+        const owners = await scopedUserIds(this.approvalRepository.manager, requester, 'approvals.view');
 
         const inTab = (tab: ApprovalTab) => {
-            const qb = this.scopedQuery(requester).andWhere('approval.status IN (:...statuses)', {
+            const qb = this.scopedQuery(owners).andWhere('approval.status IN (:...statuses)', {
                 statuses: TAB_STATUSES[tab],
             });
             if (query.starred === 'true') qb.andWhere('approval.is_starred = true');
@@ -88,15 +90,17 @@ export class ApprovalsService {
         };
     }
 
-    async findOne(id: string, requester: Requester) {
-        const approval = await this.scopedQuery(requester).andWhere('approval.id = :id', { id }).getOne();
+    /** With a requester, only a request within their approvals.view scope is found. */
+    async findOne(id: string, requester?: Requester) {
+        const owners = requester ? await scopedUserIds(this.approvalRepository.manager, requester, 'approvals.view') : null;
+        const approval = await this.scopedQuery(owners).andWhere('approval.id = :id', { id }).getOne();
         if (!approval) throw new NotFoundException('Approval request not found');
         return this.serialize(approval);
     }
 
-    /** Admin-only at the controller. A returned request can be decided again once it comes back. */
+    /** Takes approvals.decide at the controller. A returned request can be decided again once it comes back. */
     async decide(id: string, decision: string, comment: string | undefined, requester: Requester) {
-        const approval = await this.approvalRepository.findOne({ where: { id }, relations: { lead: true, target_user: true } });
+        const approval = await this.approvalRepository.findOne({ where: { id, tenant_id: tenantId() }, relations: { lead: true, target_user: true } });
         if (!approval) throw new NotFoundException('Approval request not found');
         if (approval.status === 'approved' || approval.status === 'rejected') {
             throw new ConflictException('This request has already been decided');
@@ -110,7 +114,7 @@ export class ApprovalsService {
             await manager.save(approval);
             await this.carryOut(manager, approval, decision, requester);
         });
-        return this.findOne(id, requester);
+        return this.findOne(id);
     }
 
     /** What a decision does to the thing it was about. A returned request changes nothing yet. */
@@ -132,7 +136,7 @@ export class ApprovalsService {
     }
 
     async resubmit(id: string, note: string, requester: Requester) {
-        const approval = await this.approvalRepository.findOne({ where: { id }, relations: { submitted_by: true } });
+        const approval = await this.approvalRepository.findOne({ where: { id, tenant_id: tenantId() }, relations: { submitted_by: true } });
         if (!approval) throw new NotFoundException('Approval request not found');
         if (approval.submitted_by?.id !== requester.userId) {
             throw new ForbiddenException('Only the person who raised this request can resubmit it');
@@ -143,7 +147,7 @@ export class ApprovalsService {
         approval.requester_note = note.trim();
         approval.resubmitted_at = new Date();
         await this.approvalRepository.save(approval);
-        return this.findOne(id, requester);
+        return this.findOne(id);
     }
 
     async setStarred(id: string, isStarred: boolean, requester: Requester) {
@@ -160,15 +164,17 @@ export class ApprovalsService {
                 .select('approval.type', 'type')
                 .addSelect('COUNT(*)', 'count')
                 .where("approval.status = 'pending'")
+                .andWhere('approval.tenant_id = :tenantId', { tenantId: tenantId() })
                 .groupBy('approval.type')
                 .getRawMany<{ type: string; count: string }>(),
             this.approvalRepository
                 .createQueryBuilder('approval')
                 .where("approval.status = 'pending'")
+                .andWhere('approval.tenant_id = :tenantId', { tenantId: tenantId() })
                 .andWhere('approval.due_date = CURRENT_DATE')
                 .getCount(),
-            this.userRepository.count({ where: { blocked: false, suspended: false } }),
-            this.countWhere(`SELECT COUNT(*) AS count FROM "sales_dispute" WHERE status = 'escalated'`),
+            this.userRepository.count({ where: { blocked: false, suspended: false, tenant_id: tenantId() } }),
+            this.countWhere(`SELECT COUNT(*) AS count FROM "sales_dispute" WHERE status = 'escalated' AND tenant_id = $1`),
             this.approvalRepository.query(
                 `SELECT u.id, u.first_name, u.last_name,
                         COUNT(f.id) AS open_tasks,
@@ -176,11 +182,11 @@ export class ApprovalsService {
                  FROM "follow_up" f
                  JOIN "lead" l ON l.id = f.lead_id
                  JOIN "user" u ON u.id = l.assigned_to_id
-                 WHERE f.completed = false
+                 WHERE f.completed = false AND f.tenant_id = $2
                  GROUP BY u.id, u.first_name, u.last_name
                  ORDER BY open_tasks DESC
                  LIMIT $1`,
-                [WORKLOAD_LIMIT],
+                [WORKLOAD_LIMIT, tenantId()],
             ) as Promise<{ id: number; first_name: string; last_name: string; open_tasks: string; overdue_tasks: string }[]>,
             this.countPendingOfType('payment_verification'),
         ]);
@@ -204,15 +210,15 @@ export class ApprovalsService {
     }
 
     private countPendingOfType(type: string) {
-        return this.approvalRepository.count({ where: { status: 'pending', type } });
+        return this.approvalRepository.count({ where: { status: 'pending', type, tenant_id: tenantId() } });
     }
 
     private async countWhere(sql: string) {
-        const rows: { count: string }[] = await this.approvalRepository.query(sql);
+        const rows: { count: string }[] = await this.approvalRepository.query(sql, [tenantId()]);
         return Number(rows[0]?.count ?? 0);
     }
 
-    private scopedQuery(requester: Requester) {
+    private scopedQuery(owners: number[] | null) {
         const qb = this.approvalRepository
             .createQueryBuilder('approval')
             .leftJoinAndSelect('approval.lead', 'lead')
@@ -223,9 +229,8 @@ export class ApprovalsService {
             .leftJoinAndSelect('approval.payment', 'payment')
             .leftJoinAndSelect('approval.unit', 'unit')
             .leftJoinAndSelect('unit.project', 'unitProject')
-            .where('1 = 1');
-        if (requester.role !== 'admin') qb.andWhere('submittedBy.id = :userId', { userId: requester.userId });
-        return qb;
+            .where('approval.tenant_id = :tenantId', { tenantId: tenantId() });
+        return narrowToOwners(qb, 'submittedBy.id', owners);
     }
 
     private serialize(approval: Approval) {

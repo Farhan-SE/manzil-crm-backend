@@ -20,6 +20,9 @@ export class Customers {
     @PrimaryGeneratedColumn('uuid')
     id: string;
 
+    @Column({ type: 'uuid' })
+    tenant_id: string;
+
     // The short, human-facing client ID. The uuid stays the key used in URLs and relations.
     @Column({ type: 'int' })
     @Generated('increment')

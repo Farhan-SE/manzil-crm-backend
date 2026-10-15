@@ -7,8 +7,9 @@ import { BlockUserDto } from "./block-user.dto.js";
 import { ChangeRoleDto } from "./change-role.dto.js";
 import { FindStaffDto, StarUserDto, SuspendUserDto, TransferLeadsDto, UpdateStaffProfileDto } from "./staff.dto.js";
 import { JwtAuthGuard } from "../strategies/auth.guard.js";
-import { AdminGuard } from "../strategies/admin.guard.js";
 import { UserSession } from "../strategies/user.decorator.js";
+import { Can } from "../access/permission.guard.js";
+import type { Requester } from "../access/access.js";
 
 
 @Controller('auth')
@@ -21,9 +22,10 @@ export class AuthController {
     }
 
     @Post('add-user')
-    @UseGuards(JwtAuthGuard, AdminGuard)
-    async addUser(@Body() dto: AddUserDto) {
-        return this.authService.addUser(dto);
+    @Can('staff.manage')
+    @UseGuards(JwtAuthGuard)
+    async addUser(@Body() dto: AddUserDto, @UserSession() user: Requester) {
+        return this.authService.addUser(dto, user);
     }
 
     @Get('users')
@@ -39,13 +41,15 @@ export class AuthController {
     }
 
     @Patch('users/:id/profile')
-    @UseGuards(JwtAuthGuard, AdminGuard)
+    @Can('staff.manage')
+    @UseGuards(JwtAuthGuard)
     async updateProfile(@Param('id', ParseIntPipe) id: number, @Body() dto: UpdateStaffProfileDto) {
         return this.authService.updateProfile(id, dto);
     }
 
     @Patch('users/:id/suspend')
-    @UseGuards(JwtAuthGuard, AdminGuard)
+    @Can('staff.manage')
+    @UseGuards(JwtAuthGuard)
     async setSuspended(
         @Param('id', ParseIntPipe) id: number,
         @Body() dto: SuspendUserDto,
@@ -56,7 +60,8 @@ export class AuthController {
 
     /** Hands every lead and client of one member to another, usually before deactivating them. */
     @Post('users/:id/transfer-leads')
-    @UseGuards(JwtAuthGuard, AdminGuard)
+    @Can('staff.manage')
+    @UseGuards(JwtAuthGuard)
     async transferLeads(@Param('id', ParseIntPipe) id: number, @Body() dto: TransferLeadsDto) {
         return this.authService.transferLeads(id, dto.to_user_id);
     }
@@ -68,6 +73,12 @@ export class AuthController {
         return this.authService.setStarred(id, dto.is_starred);
     }
 
+    @Get('me')
+    @UseGuards(JwtAuthGuard)
+    async me(@UserSession() user: Requester) {
+        return this.authService.me(user.userId);
+    }
+
     @Patch('change-password')
     @UseGuards(JwtAuthGuard)
     async changePassword(@Body() dto: ChangePasswordDto, @UserSession() user: any) {
@@ -75,7 +86,8 @@ export class AuthController {
     }
 
     @Patch('users/:id/block')
-    @UseGuards(JwtAuthGuard, AdminGuard)
+    @Can('staff.manage')
+    @UseGuards(JwtAuthGuard)
     async setBlocked(
         @Param('id', ParseIntPipe) id: number,
         @Body() dto: BlockUserDto,
@@ -85,17 +97,19 @@ export class AuthController {
     }
 
     @Patch('users/:id/role')
-    @UseGuards(JwtAuthGuard, AdminGuard)
+    @Can('roles.manage')
+    @UseGuards(JwtAuthGuard)
     async setRole(
         @Param('id', ParseIntPipe) id: number,
         @Body() dto: ChangeRoleDto,
         @UserSession() user: any,
     ) {
-        return this.authService.setRole(id, dto.user_role, user.userId);
+        return this.authService.setRole(id, dto, user);
     }
 
     @Patch('users/:id/team')
-    @UseGuards(JwtAuthGuard, AdminGuard)
+    @Can('staff.manage')
+    @UseGuards(JwtAuthGuard)
     async setTeam(@Param('id', ParseIntPipe) id: number, @Body() dto: SetTeamDto) {
         return this.authService.setTeam(id, dto.team_id);
     }

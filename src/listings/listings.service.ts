@@ -6,8 +6,12 @@ import { User } from '../auth/user.entity.js';
 import { CreateListingDto } from './create-listing.dto.js';
 import { UpdateListingDto } from './update-listing.dto.js';
 import { FindListingsDto } from './find-listings.dto.js';
+import { Category } from '../categories/category.entity.js';
+import { Interest } from '../interests/interest.entity.js';
+import { tenantId } from '../tenants/tenant-context.js';
+import { can, type Requester } from '../access/access.js';
+import { assertOwned } from '../tenants/tenant-scope.js';
 
-type Requester = { userId: number; role: string };
 
 @Injectable()
 export class ListingsService {
@@ -21,9 +25,10 @@ export class ListingsService {
     async create(dto: CreateListingDto, createdById: number, requester: Requester) {
         let assignedTo: User | null = null;
         if (dto.assigned_to_id) {
-            assignedTo = await this.userRepository.findOne({ where: { id: dto.assigned_to_id } });
+            assignedTo = await this.userRepository.findOne({ where: { id: dto.assigned_to_id, tenant_id: tenantId() } });
             if (!assignedTo) throw new BadRequestException('Assigning agent does not exist in the DB');
         }
+        await this.assertLookupsOwned(dto);
 
         const listing = this.listingRepository.create({
             area_name: dto.area_name,
@@ -50,6 +55,7 @@ export class ListingsService {
         const qb = this.listingRepository
             .createQueryBuilder('listing')
             .leftJoinAndSelect('listing.assigned_to', 'assignedTo')
+            .where('listing.tenant_id = :tenantId', { tenantId: tenantId() })
             .orderBy('listing.created_at', 'DESC');
 
         if (query.search) {
@@ -74,7 +80,7 @@ export class ListingsService {
 
     async findOne(id: string, requester: Requester) {
         const listing = await this.listingRepository.findOne({
-            where: { id },
+            where: { id, tenant_id: tenantId() },
             relations: { assigned_to: true },
         });
         if (!listing) throw new NotFoundException('Listing not found');
@@ -83,22 +89,23 @@ export class ListingsService {
 
     async update(id: string, dto: UpdateListingDto, requester: Requester) {
         const listing = await this.listingRepository.findOne({
-            where: { id },
+            where: { id, tenant_id: tenantId() },
             relations: { assigned_to: true },
         });
         if (!listing) throw new NotFoundException('Listing not found');
 
-        if (requester.role !== 'admin') {
+        if (!can(requester, 'inventory.manage')) {
             if (listing.assigned_to?.id !== requester.userId) {
                 throw new ForbiddenException('You can only edit listings assigned to you');
             }
             if (dto.assigned_to_id !== undefined && dto.assigned_to_id !== requester.userId) {
-                throw new ForbiddenException('Only an admin can reassign a listing');
+                throw new ForbiddenException('Your role cannot reassign listings');
             }
         }
 
+        await this.assertLookupsOwned(dto);
         if (dto.assigned_to_id !== undefined) {
-            const assignedTo = await this.userRepository.findOne({ where: { id: dto.assigned_to_id } });
+            const assignedTo = await this.userRepository.findOne({ where: { id: dto.assigned_to_id, tenant_id: tenantId() } });
             if (!assignedTo) throw new BadRequestException('assigned_to_id does not match an existing user');
             listing.assigned_to = assignedTo;
         }
@@ -118,14 +125,19 @@ export class ListingsService {
     }
 
     async remove(id: string) {
-        const listing = await this.listingRepository.findOne({ where: { id } });
+        const listing = await this.listingRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!listing) throw new NotFoundException('Listing not found');
         await this.listingRepository.remove(listing);
     }
 
+    private async assertLookupsOwned(dto: { category_id?: string | null; interest_id?: string | null }) {
+        await assertOwned(this.listingRepository.manager, Category, dto.category_id, 'category_id');
+        await assertOwned(this.listingRepository.manager, Interest, dto.interest_id, 'interest_id');
+    }
+
     private serialize(listing: Listing, requester: Requester) {
         const canSeeContact =
-            requester.role === 'admin' || listing.assigned_to?.id === requester.userId;
+            can(requester, 'inventory.manage') || listing.assigned_to?.id === requester.userId;
 
         return {
             id: listing.id,
@@ -136,7 +148,7 @@ export class ListingsService {
             location: listing.location,
             price: listing.price != null ? Number(listing.price) : null,
             description: listing.description,
-            // The seller's details belong to the admin and the agent working the listing.
+            // The seller's details belong to inventory managers and the agent working the listing.
             can_see_contact: canSeeContact,
             client_name: canSeeContact ? listing.client_name : null,
             client_number: canSeeContact ? listing.client_number : null,

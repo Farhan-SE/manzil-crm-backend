@@ -20,7 +20,7 @@ import { CreateCustomerDto } from './create-customer.dto.js';
 import { UpdateCustomerDto } from './update-customer.dto.js';
 import { FindCustomersDto, StarCustomerDto } from './find-customers.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
-import { AdminGuard } from '../strategies/admin.guard.js';
+import { Can } from '../access/permission.guard.js';
 import { UserSession } from '../strategies/user.decorator.js';
 import { BulkAssignDto } from '../common/bulk-assign.dto.js';
 
@@ -29,20 +29,21 @@ import { BulkAssignDto } from '../common/bulk-assign.dto.js';
 export class CustomerController {
     constructor(private readonly customerService: CustomerService) { }
 
-    // Open to agents: a client an agent adds is theirs.
+    // Without customers.assign a client is the creator's own.
+    @Can('customers.create')
     @Post()
     create(@Body() dto: CreateCustomerDto, @UserSession() user: any) {
         return this.customerService.create(dto, user);
     }
 
     /** Moves clients, and their leads with them, to one staff member. */
-    @UseGuards(AdminGuard)
+    @Can('customers.assign')
     @Post('bulk-assign')
     bulkAssign(@Body() dto: BulkAssignDto) {
         return this.customerService.bulkAssign(dto.ids, dto.assigned_to_id);
     }
 
-    @UseGuards(AdminGuard)
+    @Can('customers.import')
     @Post('import')
     @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
     importCsv(@UploadedFile() file: UploadedCsv) {
@@ -60,7 +61,7 @@ export class CustomerController {
         return this.customerService.findOne(id, user);
     }
 
-    // No AdminGuard: the service lets the customer's own agent through, admins for any.
+    // No permission guard: the service checks customers.edit against the client's owner.
     @Patch(':id')
     update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateCustomerDto, @UserSession() user: any) {
         return this.customerService.update(id, dto, user);
@@ -72,7 +73,7 @@ export class CustomerController {
         return this.customerService.setStarred(id, dto.is_starred);
     }
 
-    @UseGuards(AdminGuard)
+    @Can('customers.delete')
     @Delete(':id')
     async remove(@Param('id', ParseUUIDPipe) id: string) {
         await this.customerService.remove(id);

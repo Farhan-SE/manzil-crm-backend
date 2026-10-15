@@ -1,12 +1,16 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, Unique } from 'typeorm';
 
 @Entity()
+@Unique(['tenant_id', 'name'])
 export class Source {
 
     @PrimaryGeneratedColumn('uuid')
     id: string;
 
-    @Column({ unique: true })
+    @Column({ type: 'uuid' })
+    tenant_id: string;
+
+    @Column()
     name: string;
 
     @CreateDateColumn({ type: 'timestamptz' })

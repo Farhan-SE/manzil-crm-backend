@@ -6,9 +6,10 @@ import { PartnerProject } from '../partner-projects/partner-project.entity.js';
 import { User } from '../auth/user.entity.js';
 import { Approval } from '../approvals/approval.entity.js';
 
-type Requester = { userId: number; role: string };
 import { CreateUnitDto, FindUnitsDto, UpdateUnitDto } from './unit.dto.js';
 import { cell, parseCsvBuffer, type ImportResult } from '../common/csv.js';
+import { tenantId } from '../tenants/tenant-context.js';
+import { can, type Requester } from '../access/access.js';
 
 /** Accepted CSV header spellings, lowercased. Order within a list does not matter. */
 const UNIT_ALIASES = {
@@ -44,11 +45,11 @@ export class UnitsService {
         private projectRepository: Repository<PartnerProject>,
     ) { }
 
-    /** An admin's unit goes straight on sale; an agent's waits for an admin to approve it. */
+    /** A unit from someone with inventory.approve goes straight on sale; anyone else's waits for approval. */
     async create(dto: CreateUnitDto, requester: Requester) {
         await this.assertProjectExists(dto.project_id);
         await this.assertUnitNumberIsFree(dto.project_id, dto.unit_number);
-        const needsApproval = requester.role !== 'admin';
+        const needsApproval = !can(requester, 'inventory.approve');
 
         const unit = this.unitRepository.create({
             project_id: dto.project_id,
@@ -102,6 +103,7 @@ export class UnitsService {
                 .createQueryBuilder('unit')
                 .select('DISTINCT unit.unit_type', 'unit_type')
                 .where('unit.unit_type IS NOT NULL')
+                .andWhere('unit.tenant_id = :tenantId', { tenantId: tenantId() })
                 .orderBy('unit_type', 'ASC')
                 .getRawMany<{ unit_type: string }>(),
         ]);
@@ -117,20 +119,20 @@ export class UnitsService {
     }
 
     async findOne(id: string) {
-        const unit = await this.unitRepository.findOne({ where: { id }, relations: { project: true, lead: true } });
+        const unit = await this.unitRepository.findOne({ where: { id, tenant_id: tenantId() }, relations: { project: true, lead: true } });
         if (!unit) throw new NotFoundException('Unit not found');
         return this.serialize(unit);
     }
 
     async setStarred(id: string, isStarred: boolean) {
-        const result = await this.unitRepository.update({ id }, { is_starred: isStarred });
+        const result = await this.unitRepository.update({ id, tenant_id: tenantId() }, { is_starred: isStarred });
         if (!result.affected) throw new NotFoundException('Unit not found');
         return { id, is_starred: isStarred };
     }
 
     async update(id: string, dto: UpdateUnitDto) {
         // project is deliberately not loaded — a loaded relation would win over project_id on save.
-        const unit = await this.unitRepository.findOne({ where: { id } });
+        const unit = await this.unitRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!unit) throw new NotFoundException('Unit not found');
 
         const projectId = dto.project_id ?? unit.project_id;
@@ -159,7 +161,7 @@ export class UnitsService {
     }
 
     async remove(id: string) {
-        const unit = await this.unitRepository.findOne({ where: { id } });
+        const unit = await this.unitRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!unit) throw new NotFoundException('Unit not found');
         await this.unitRepository.remove(unit);
     }
@@ -215,14 +217,14 @@ export class UnitsService {
     }
 
     /**
-     * Approved units are listed for everyone. An admin also sees units awaiting approval
-     * (and rejected ones); an agent sees the ones they added themselves.
+     * Approved units are listed for everyone. Whoever can approve units also sees those awaiting
+     * approval (and rejected ones); anyone else sees the ones they added themselves.
      */
     private buildWhere(query: FindUnitsDto, requester: Requester, status?: string) {
-        const where: Record<string, unknown> = {};
+        const where: Record<string, unknown> = { tenant_id: tenantId() };
         if (status) where.status = status;
         if (query.inventory_type) where.inventory_type = query.inventory_type;
-        if (requester.role !== 'admin') {
+        if (!can(requester, 'inventory.approve')) {
             const visible = [{ ...where, approval_status: 'approved' }, { ...where, approval_status: Not('approved'), created_by: { id: requester.userId } }];
             return visible.map((entry) => this.narrow(entry, query));
         }
@@ -238,7 +240,7 @@ export class UnitsService {
     }
 
     private async assertProjectExists(id: string) {
-        const project = await this.projectRepository.findOne({ where: { id } });
+        const project = await this.projectRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!project) throw new BadRequestException('project_id does not match an existing project');
     }
 

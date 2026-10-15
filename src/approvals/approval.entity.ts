@@ -25,6 +25,9 @@ export class Approval {
     @PrimaryGeneratedColumn('uuid')
     id: string;
 
+    @Column({ type: 'uuid' })
+    tenant_id: string;
+
     // The short, human-facing request ID, shown as APR-048.
     @Column({ type: 'int' })
     @Generated('increment')

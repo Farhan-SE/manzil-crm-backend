@@ -14,7 +14,7 @@ import { UserSession } from '../strategies/user.decorator.js';
 export class SalesDisputesController {
     constructor(private readonly salesDisputesService: SalesDisputesService) { }
 
-    // No AdminGuard: anyone on a deal can raise a case about it.
+    // Open to all staff: anyone on a deal can raise a case about it.
     @Post()
     create(@Body() dto: CreateSalesDisputeDto, @UserSession() user: any) {
         return this.salesDisputesService.create(dto, user);
@@ -30,7 +30,7 @@ export class SalesDisputesController {
         return this.salesDisputesService.findOne(id, user);
     }
 
-    // No AdminGuard: the service lets the case's review owner through, admins for any case.
+    // No permission guard: the case's review owner may move it, disputes.manage any case.
     @Patch(':id/status')
     setStatus(@Param('id', ParseUUIDPipe) id: string, @Body() dto: SetDisputeStatusDto, @UserSession() user: any) {
         return this.salesDisputesService.setStatus(id, dto.status, user);
