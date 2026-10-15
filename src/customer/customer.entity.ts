@@ -10,6 +10,7 @@ import {
 } from 'typeorm';
 import { User } from '../auth/user.entity.js';
 import { Source } from '../sources/source.entity.js';
+import { PartnerProject } from '../partner-projects/partner-project.entity.js';
 
 export const CUSTOMER_STAGES = ['inquiry', 'prospect', 'mature', 'pre_closure', 'sold', 'lost'];
 export const GENDERS = ['male', 'female'];
@@ -69,6 +70,14 @@ export class Customers {
     @ManyToOne(() => Source, { nullable: true, createForeignKeyConstraints: false })
     @JoinColumn({ name: 'source_id' })
     source: Source | null;
+
+    /** The project the client came in for. Set from the form or an import; a lead isn't needed for it. */
+    @Column({ type: 'uuid', nullable: true })
+    project_id: string | null;
+
+    @ManyToOne(() => PartnerProject, { nullable: true, createForeignKeyConstraints: false })
+    @JoinColumn({ name: 'project_id' })
+    project: PartnerProject | null;
 
     @Column({ type: 'text', nullable: true })
     sub_source: string | null;

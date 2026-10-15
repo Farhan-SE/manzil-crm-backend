@@ -46,9 +46,9 @@ export class CustomerController {
     @Can('customers.import')
     @Post('import')
     @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
-    importCsv(@UploadedFile() file: UploadedCsv) {
+    importCsv(@UploadedFile() file: UploadedCsv, @UserSession() user: any) {
         if (!file) throw new BadRequestException('No file uploaded');
-        return this.customerService.importCsv(file.buffer);
+        return this.customerService.importCsv(file.buffer, user.userId);
     }
 
     @Get()
