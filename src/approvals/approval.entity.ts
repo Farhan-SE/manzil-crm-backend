@@ -10,8 +10,10 @@ import {
 } from 'typeorm';
 import { Lead } from '../leads/lead.entity.js';
 import { User } from '../auth/user.entity.js';
+import { Unit } from '../units/unit.entity.js';
+import { Payment } from '../payments/payment.entity.js';
 
-export const APPROVAL_TYPES = ['booking_approval', 'lead_allocation', 'payment_verification'];
+export const APPROVAL_TYPES = ['lead_transfer', 'inventory_approval', 'payment_verification'];
 export const APPROVAL_PRIORITIES = ['normal', 'high'];
 /** `returned` sends it back to the requester for more information; `rejected` closes it. */
 export const APPROVAL_DECISIONS = ['approved', 'returned', 'rejected'];
@@ -22,6 +24,9 @@ export class Approval {
 
     @PrimaryGeneratedColumn('uuid')
     id: string;
+
+    @Column({ type: 'uuid' })
+    tenant_id: string;
 
     // The short, human-facing request ID, shown as APR-048.
     @Column({ type: 'int' })
@@ -34,9 +39,30 @@ export class Approval {
     @Column({ type: 'text' })
     summary: string;
 
-    @ManyToOne(() => Lead, { onDelete: 'CASCADE' })
+    @ManyToOne(() => Lead, { nullable: true, onDelete: 'CASCADE' })
     @JoinColumn({ name: 'lead_id' })
-    lead: Lead;
+    lead: Lead | null;
+
+    /** The payment a `payment_verification` asks an admin to confirm. */
+    @Column({ type: 'uuid', nullable: true })
+    payment_id: string | null;
+
+    @ManyToOne(() => Payment, { nullable: true, onDelete: 'CASCADE' })
+    @JoinColumn({ name: 'payment_id' })
+    payment: Payment | null;
+
+    /** The unit an `inventory_approval` would put on sale. */
+    @Column({ type: 'uuid', nullable: true })
+    unit_id: string | null;
+
+    @ManyToOne(() => Unit, { nullable: true, onDelete: 'CASCADE' })
+    @JoinColumn({ name: 'unit_id' })
+    unit: Unit | null;
+
+    /** Who a `lead_transfer` hands the lead to. */
+    @ManyToOne(() => User, { nullable: true, onDelete: 'SET NULL' })
+    @JoinColumn({ name: 'target_user_id' })
+    target_user: User | null;
 
     @Column({ type: 'text', default: 'normal' })
     priority: string;
@@ -61,6 +87,13 @@ export class Approval {
 
     @Column({ type: 'timestamptz', nullable: true })
     decided_at: Date | null;
+
+    /** What the requester added when sending a returned request back. */
+    @Column({ type: 'text', nullable: true })
+    requester_note: string | null;
+
+    @Column({ type: 'timestamptz', nullable: true })
+    resubmitted_at: Date | null;
 
     @Column({ type: 'boolean', default: false })
     is_starred: boolean;

@@ -4,8 +4,12 @@ import { ILike, Not, Repository } from 'typeorm';
 import { Unit, UNIT_STATUSES } from './unit.entity.js';
 import { PartnerProject } from '../partner-projects/partner-project.entity.js';
 import { User } from '../auth/user.entity.js';
+import { Approval } from '../approvals/approval.entity.js';
+
 import { CreateUnitDto, FindUnitsDto, UpdateUnitDto } from './unit.dto.js';
 import { cell, parseCsvBuffer, type ImportResult } from '../common/csv.js';
+import { tenantId } from '../tenants/tenant-context.js';
+import { can, type Requester } from '../access/access.js';
 
 /** Accepted CSV header spellings, lowercased. Order within a list does not matter. */
 const UNIT_ALIASES = {
@@ -41,9 +45,11 @@ export class UnitsService {
         private projectRepository: Repository<PartnerProject>,
     ) { }
 
-    async create(dto: CreateUnitDto, createdById: number) {
+    /** A unit from someone with inventory.approve goes straight on sale; anyone else's waits for approval. */
+    async create(dto: CreateUnitDto, requester: Requester) {
         await this.assertProjectExists(dto.project_id);
         await this.assertUnitNumberIsFree(dto.project_id, dto.unit_number);
+        const needsApproval = !can(requester, 'inventory.approve');
 
         const unit = this.unitRepository.create({
             project_id: dto.project_id,
@@ -54,20 +60,36 @@ export class UnitsService {
             beds: dto.beds ?? null,
             price: dto.price != null ? String(dto.price) : null,
             area_sqft: dto.area_sqft != null ? String(dto.area_sqft) : null,
-            status: dto.status ?? 'available',
-            created_by: { id: createdById } as User,
+            status: needsApproval ? 'available' : (dto.status ?? 'available'),
+            inventory_type: dto.inventory_type,
+            approval_status: needsApproval ? 'pending' : 'approved',
+            created_by: { id: requester.userId } as User,
         });
-        await this.unitRepository.save(unit);
+        await this.unitRepository.manager.transaction(async (manager) => {
+            await manager.save(unit);
+            if (!needsApproval) return;
+            const project = await manager.findOne(PartnerProject, { where: { id: dto.project_id } });
+            await manager.save(
+                manager.create(Approval, {
+                    type: 'inventory_approval',
+                    summary: `Approve unit ${unit.unit_number} in ${project?.project_name ?? 'the project'} for ${
+                        dto.inventory_type === 'partner' ? 'sales partner' : 'direct'
+                    } inventory`,
+                    unit_id: unit.id,
+                    submitted_by: { id: requester.userId } as User,
+                }),
+            );
+        });
         return this.findOne(unit.id);
     }
 
-    async findAll(query: FindUnitsDto) {
+    async findAll(query: FindUnitsDto, requester: Requester) {
         const page = query.page ?? 1;
         const limit = query.limit ?? 20;
 
         const [[data, total], counts, types] = await Promise.all([
             this.unitRepository.findAndCount({
-                where: this.buildWhere(query, query.status),
+                where: this.buildWhere(query, requester, query.status),
                 relations: { project: true, lead: true },
                 order: { created_at: query.sort === 'asc' ? 'ASC' : 'DESC' },
                 skip: (page - 1) * limit,
@@ -75,12 +97,13 @@ export class UnitsService {
             }),
             // Counted per status with the other filters applied, so the tabs match the filters.
             Promise.all(
-                UNIT_STATUSES.map((status) => this.unitRepository.count({ where: this.buildWhere(query, status) })),
+                UNIT_STATUSES.map((status) => this.unitRepository.count({ where: this.buildWhere(query, requester, status) })),
             ),
             this.unitRepository
                 .createQueryBuilder('unit')
                 .select('DISTINCT unit.unit_type', 'unit_type')
                 .where('unit.unit_type IS NOT NULL')
+                .andWhere('unit.tenant_id = :tenantId', { tenantId: tenantId() })
                 .orderBy('unit_type', 'ASC')
                 .getRawMany<{ unit_type: string }>(),
         ]);
@@ -96,20 +119,20 @@ export class UnitsService {
     }
 
     async findOne(id: string) {
-        const unit = await this.unitRepository.findOne({ where: { id }, relations: { project: true, lead: true } });
+        const unit = await this.unitRepository.findOne({ where: { id, tenant_id: tenantId() }, relations: { project: true, lead: true } });
         if (!unit) throw new NotFoundException('Unit not found');
         return this.serialize(unit);
     }
 
     async setStarred(id: string, isStarred: boolean) {
-        const result = await this.unitRepository.update({ id }, { is_starred: isStarred });
+        const result = await this.unitRepository.update({ id, tenant_id: tenantId() }, { is_starred: isStarred });
         if (!result.affected) throw new NotFoundException('Unit not found');
         return { id, is_starred: isStarred };
     }
 
     async update(id: string, dto: UpdateUnitDto) {
         // project is deliberately not loaded — a loaded relation would win over project_id on save.
-        const unit = await this.unitRepository.findOne({ where: { id } });
+        const unit = await this.unitRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!unit) throw new NotFoundException('Unit not found');
 
         const projectId = dto.project_id ?? unit.project_id;
@@ -138,7 +161,7 @@ export class UnitsService {
     }
 
     async remove(id: string) {
-        const unit = await this.unitRepository.findOne({ where: { id } });
+        const unit = await this.unitRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!unit) throw new NotFoundException('Unit not found');
         await this.unitRepository.remove(unit);
     }
@@ -193,9 +216,22 @@ export class UnitsService {
         return result;
     }
 
-    private buildWhere(query: FindUnitsDto, status?: string) {
-        const where: Record<string, unknown> = {};
+    /**
+     * Approved units are listed for everyone. Whoever can approve units also sees those awaiting
+     * approval (and rejected ones); anyone else sees the ones they added themselves.
+     */
+    private buildWhere(query: FindUnitsDto, requester: Requester, status?: string) {
+        const where: Record<string, unknown> = { tenant_id: tenantId() };
         if (status) where.status = status;
+        if (query.inventory_type) where.inventory_type = query.inventory_type;
+        if (!can(requester, 'inventory.approve')) {
+            const visible = [{ ...where, approval_status: 'approved' }, { ...where, approval_status: Not('approved'), created_by: { id: requester.userId } }];
+            return visible.map((entry) => this.narrow(entry, query));
+        }
+        return this.narrow(where, query);
+    }
+
+    private narrow(where: Record<string, unknown>, query: FindUnitsDto) {
         if (query.project_id) where.project_id = query.project_id;
         if (query.unit_type) where.unit_type = query.unit_type;
         if (query.search) where.unit_number = ILike(`%${query.search}%`);
@@ -204,7 +240,7 @@ export class UnitsService {
     }
 
     private async assertProjectExists(id: string) {
-        const project = await this.projectRepository.findOne({ where: { id } });
+        const project = await this.projectRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!project) throw new BadRequestException('project_id does not match an existing project');
     }
 
@@ -232,6 +268,8 @@ export class UnitsService {
             price: unit.price != null ? Number(unit.price) : null,
             area_sqft: unit.area_sqft != null ? Number(unit.area_sqft) : null,
             status: unit.status,
+            inventory_type: unit.inventory_type,
+            approval_status: unit.approval_status,
             is_starred: unit.is_starred,
             lead: unit.lead
                 ? { id: unit.lead.id, lead_no: unit.lead.lead_no, client_name: unit.lead.client_name }

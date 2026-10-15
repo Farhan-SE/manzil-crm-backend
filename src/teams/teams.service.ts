@@ -4,6 +4,7 @@ import { ILike, In, Not, Repository } from 'typeorm';
 import { Team } from './team.entity.js';
 import { User } from '../auth/user.entity.js';
 import { FindTeamsDto, TEAM_TABS, TeamDto, type TeamTab } from './team.dto.js';
+import { tenantId } from '../tenants/tenant-context.js';
 
 type TeamLoad = { members: number; allocated_leads: number; project_assignments: number };
 
@@ -19,7 +20,7 @@ export class TeamsService {
     ) { }
 
     async findAll() {
-        const teams = await this.teamRepository.find({ order: { name: 'ASC' } });
+        const teams = await this.teamRepository.find({ where: { tenant_id: tenantId() }, order: { name: 'ASC' } });
         return this.serializeMany(teams);
     }
 
@@ -29,7 +30,7 @@ export class TeamsService {
         const limit = query.limit ?? 10;
 
         const inTab = (tab: TeamTab) => {
-            const qb = this.teamRepository.createQueryBuilder('team');
+            const qb = this.teamRepository.createQueryBuilder('team').where('team.tenant_id = :tenantId', { tenantId: tenantId() });
             if (tab !== 'all') qb.andWhere('team.is_active = :isActive', { isActive: tab === 'active' });
             if (query.department) qb.andWhere('team.department = :department', { department: query.department });
             if (query.region) qb.andWhere('team.region = :region', { region: query.region });
@@ -88,7 +89,7 @@ export class TeamsService {
     }
 
     async update(id: string, dto: TeamDto) {
-        const team = await this.teamRepository.findOne({ where: { id } });
+        const team = await this.teamRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!team) throw new NotFoundException('Team not found');
         await this.assertNameIsFree(dto.name, id);
         if (dto.lead_id != null) await this.assertUserExists(dto.lead_id);
@@ -107,20 +108,20 @@ export class TeamsService {
     }
 
     async setActive(id: string, isActive: boolean) {
-        const result = await this.teamRepository.update({ id }, { is_active: isActive });
+        const result = await this.teamRepository.update({ id, tenant_id: tenantId() }, { is_active: isActive });
         if (!result.affected) throw new NotFoundException('Team not found');
         return { id, is_active: isActive };
     }
 
     async setStarred(id: string, isStarred: boolean) {
-        const result = await this.teamRepository.update({ id }, { is_starred: isStarred });
+        const result = await this.teamRepository.update({ id, tenant_id: tenantId() }, { is_starred: isStarred });
         if (!result.affected) throw new NotFoundException('Team not found');
         return { id, is_starred: isStarred };
     }
 
     /** Members are kept; they just end up without a team. */
     async remove(id: string) {
-        const team = await this.teamRepository.findOne({ where: { id } });
+        const team = await this.teamRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!team) throw new NotFoundException('Team not found');
         await this.userRepository.update({ team_id: id }, { team_id: null, team: null });
         await this.teamRepository.remove(team);
@@ -133,19 +134,19 @@ export class TeamsService {
             { team_id: null, team: null },
         );
         if (memberIds.length > 0) {
-            await this.userRepository.update({ id: In(memberIds) }, { team_id: team.id, team: team.name });
+            await this.userRepository.update({ id: In(memberIds), tenant_id: tenantId() }, { team_id: team.id, team: team.name });
         }
     }
 
     private async assertNameIsFree(name: string, excludeId?: string) {
         const existing = await this.teamRepository.findOne({
-            where: { name: ILike(name.trim().replace(/[%_\\]/g, '\\$&')), ...(excludeId ? { id: Not(excludeId) } : {}) },
+            where: { tenant_id: tenantId(), name: ILike(name.trim().replace(/[%_\\]/g, '\\$&')), ...(excludeId ? { id: Not(excludeId) } : {}) },
         });
         if (existing) throw new ConflictException('A team with this name already exists');
     }
 
     private async assertUserExists(id: number) {
-        const user = await this.userRepository.findOne({ where: { id } });
+        const user = await this.userRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!user) throw new BadRequestException('lead_id does not match an existing user');
     }
 
@@ -154,6 +155,7 @@ export class TeamsService {
             .createQueryBuilder('team')
             .select(`DISTINCT team.${column}`, 'value')
             .where(`team.${column} IS NOT NULL`)
+            .andWhere('team.tenant_id = :tenantId', { tenantId: tenantId() })
             .orderBy('value', 'ASC')
             .getRawMany<{ value: string }>();
         return rows.map((row) => row.value);

@@ -14,6 +14,9 @@ export class Location {
     @PrimaryGeneratedColumn('uuid')
     id: string;
 
+    @Column({ type: 'uuid' })
+    tenant_id: string;
+
     // The short, human-facing ID, shown as LOC-001.
     @Column({ type: 'int' })
     @Generated('increment')

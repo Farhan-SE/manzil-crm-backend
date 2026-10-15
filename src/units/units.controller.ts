@@ -18,7 +18,7 @@ import type { UploadedCsv } from '../common/csv.js';
 import { UnitsService } from './units.service.js';
 import { CreateUnitDto, FindUnitsDto, ImportUnitsDto, StarUnitDto, UpdateUnitDto } from './unit.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
-import { AdminGuard } from '../strategies/admin.guard.js';
+import { Can } from '../access/permission.guard.js';
 import { UserSession } from '../strategies/user.decorator.js';
 
 @Controller('units')
@@ -26,13 +26,13 @@ import { UserSession } from '../strategies/user.decorator.js';
 export class UnitsController {
     constructor(private readonly unitsService: UnitsService) { }
 
-    @UseGuards(AdminGuard)
+    // Open to agents: their units wait in Management for an admin to approve.
     @Post()
     create(@Body() dto: CreateUnitDto, @UserSession() user: any) {
-        return this.unitsService.create(dto, user.userId);
+        return this.unitsService.create(dto, user);
     }
 
-    @UseGuards(AdminGuard)
+    @Can('inventory.manage')
     @Post('import')
     @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }))
     importCsv(@UploadedFile() file: UploadedCsv, @Query() query: ImportUnitsDto, @UserSession() user: any) {
@@ -41,8 +41,8 @@ export class UnitsController {
     }
 
     @Get()
-    findAll(@Query() query: FindUnitsDto) {
-        return this.unitsService.findAll(query);
+    findAll(@Query() query: FindUnitsDto, @UserSession() user: any) {
+        return this.unitsService.findAll(query, user);
     }
 
     @Get(':id')
@@ -50,7 +50,7 @@ export class UnitsController {
         return this.unitsService.findOne(id);
     }
 
-    @UseGuards(AdminGuard)
+    @Can('inventory.manage')
     @Patch(':id')
     update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateUnitDto) {
         return this.unitsService.update(id, dto);
@@ -62,7 +62,7 @@ export class UnitsController {
         return this.unitsService.setStarred(id, dto.is_starred);
     }
 
-    @UseGuards(AdminGuard)
+    @Can('inventory.manage')
     @Delete(':id')
     async remove(@Param('id', ParseUUIDPipe) id: string) {
         await this.unitsService.remove(id);

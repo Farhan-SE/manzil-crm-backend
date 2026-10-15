@@ -2,7 +2,7 @@ import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query, UseGua
 import { PaymentsService } from './payments.service.js';
 import { CreatePaymentDto, FindPaymentsDto, RecordPaymentDto, StarPaymentDto } from './payment.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
-import { AdminGuard } from '../strategies/admin.guard.js';
+import { Can } from '../access/permission.guard.js';
 import { UserSession } from '../strategies/user.decorator.js';
 
 @Controller('payments')
@@ -10,7 +10,7 @@ import { UserSession } from '../strategies/user.decorator.js';
 export class PaymentsController {
     constructor(private readonly paymentsService: PaymentsService) { }
 
-    @UseGuards(AdminGuard)
+    @Can('payments.create')
     @Post()
     create(@Body() dto: CreatePaymentDto, @UserSession() user: any) {
         return this.paymentsService.create(dto, user);
@@ -26,13 +26,13 @@ export class PaymentsController {
         return this.paymentsService.findAll(query, user);
     }
 
-    // No AdminGuard: the service lets the lead's own agent through, admins for any payment.
+    // No permission guard: the service checks payments.record against the lead's owner.
     @Patch(':id/record')
     record(@Param('id', ParseUUIDPipe) id: string, @Body() dto: RecordPaymentDto, @UserSession() user: any) {
         return this.paymentsService.record(id, dto, user);
     }
 
-    @UseGuards(AdminGuard)
+    @Can('payments.verify')
     @Patch(':id/verify')
     verify(@Param('id', ParseUUIDPipe) id: string, @UserSession() user: any) {
         return this.paymentsService.verify(id, user);

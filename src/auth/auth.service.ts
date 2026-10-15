@@ -11,6 +11,13 @@ import * as bcrypt from 'bcrypt';
 import { JwtService } from "@nestjs/jwt";
 import * as crypto from 'crypto';
 import { sendResetEmail } from "../mailer/mailer.js";
+import { generatePassword } from "../common/password.js";
+import { Tenant } from "../tenants/tenant.entity.js";
+import { logoUrl } from "../tenants/tenants.service.js";
+import { tenantId } from "../tenants/tenant-context.js";
+import { Role } from "../access/role.entity.js";
+import { can, type Requester } from "../access/access.js";
+import { loadAccess } from "../access/load-access.js";
 
 @Injectable()
 export class AuthService {
@@ -22,26 +29,6 @@ export class AuthService {
         private jwtService: JwtService,
     ) { }
 
-    private generatePassword(length = 12): string {
-        const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
-        const lower = 'abcdefghijkmnopqrstuvwxyz';
-        const digits = '23456789';
-        const special = '!@#$%^&*()_+-=';
-        const all = upper + lower + digits + special;
-
-        const pick = (chars: string) => chars[crypto.randomInt(chars.length)];
-
-        const required = [pick(upper), pick(lower), pick(digits), pick(special)];
-        const rest = Array.from({ length: length - required.length }, () => pick(all));
-        const passwordChars = [...required, ...rest];
-
-        for (let i = passwordChars.length - 1; i > 0; i--) {
-            const j = crypto.randomInt(i + 1);
-            [passwordChars[i], passwordChars[j]] = [passwordChars[j], passwordChars[i]];
-        }
-
-        return passwordChars.join('');
-    }
     private safeUser(user: User) {
         return {
             id: user.id,
@@ -49,6 +36,7 @@ export class AuthService {
             last_name: user.last_name,
             email: user.email,
             user_role: user.user_role,
+            role_id: user.role_id,
             team_id: user.team_id,
             team: user.team,
             designation: user.designation,
@@ -83,6 +71,10 @@ export class AuthService {
         if (user.suspended) {
             throw new ForbiddenException('Your account has been suspended please contact your admin.');
         }
+        if (user.tenant_id) {
+            const tenant = await this.userRepository.manager.findOne(Tenant, { where: { id: user.tenant_id } });
+            if (tenant?.status !== 'active') throw new ForbiddenException("Your company's account is suspended.");
+        }
         const payload = {
             id: user.id,
             email: user.email,
@@ -97,7 +89,8 @@ export class AuthService {
         };
     }
     
-    async addUser(dto: AddUserDto) {
+    async addUser(dto: AddUserDto, requester: Requester) {
+        const role = await this.resolveRole(dto, requester);
         const existing = await this.userRepository.findOne({ where: { email: dto.email } });
         if (existing) {
             throw new BadRequestException('A user with this email already exists');
@@ -105,7 +98,7 @@ export class AuthService {
 
         const team = dto.team_id ? await this.findTeam(dto.team_id) : null;
 
-        const plainPassword = this.generatePassword();
+        const plainPassword = generatePassword();
         const hashedPassword = await bcrypt.hash(plainPassword, 10);
 
         const user = this.userRepository.create({
@@ -113,7 +106,8 @@ export class AuthService {
             last_name: dto.last_name,
             email: dto.email,
             password: hashedPassword,
-            user_role:dto.user_role,
+            user_role: role.is_system ? 'admin' : 'agent',
+            role_id: role.id,
             team_id: team?.id ?? null,
             team: team?.name ?? null,
         });
@@ -144,7 +138,7 @@ export class AuthService {
         // Without this an admin can lock themselves out of the only admin account.
         if (id === requesterId) throw new BadRequestException('You cannot block your own account');
 
-        const user = await this.userRepository.findOne({ where: { id } });
+        const user = await this.userRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!user) throw new NotFoundException('User not found');
 
         user.blocked = blocked;
@@ -152,29 +146,62 @@ export class AuthService {
         return this.safeUser(user);
     }
 
-    async setRole(id: number, userRole: string, requesterId: number) {
-        if (id === requesterId) throw new BadRequestException('You cannot change your own role');
+    async setRole(id: number, choice: { role_id?: string; user_role?: string }, requester: Requester) {
+        if (id === requester.userId) throw new BadRequestException('You cannot change your own role');
 
-        const user = await this.userRepository.findOne({ where: { id } });
+        const user = await this.userRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!user) throw new NotFoundException('User not found');
+        const role = await this.resolveRole(choice, requester);
 
-        // Demoting the last admin would leave nobody able to administer the CRM.
-        if (user.user_role === 'admin' && userRole !== 'admin') {
+        // Taking the Admin role from its last active holder would leave nobody able to run the company.
+        const adminRole = await this.userRepository.manager.findOne(Role, { where: { tenant_id: tenantId(), is_system: true } });
+        if (adminRole && user.role_id === adminRole.id && role.id !== adminRole.id) {
             const adminCount = await this.userRepository.count({
-                where: { user_role: 'admin', blocked: false },
+                where: { role_id: adminRole.id, blocked: false, suspended: false, tenant_id: tenantId() },
             });
             if (adminCount <= 1) throw new BadRequestException('The last admin cannot be demoted');
         }
 
-        user.user_role = userRole;
+        user.role_id = role.id;
+        user.user_role = role.is_system ? 'admin' : 'agent';
         await this.userRepository.save(user);
         return this.safeUser(user);
+    }
+
+    /** The signed-in member with their role and what it lets them do, for the client to shape its menus. */
+    async me(userId: number) {
+        const user = await this.userRepository.findOne({ where: { id: userId } });
+        if (!user) throw new NotFoundException('User not found');
+        const { role, permissions } = await loadAccess(this.userRepository.manager, user.role_id);
+        const company = user.tenant_id ? await this.userRepository.manager.findOne(Tenant, { where: { id: user.tenant_id } }) : null;
+        return {
+            ...this.safeUser(user),
+            tenant_id: user.tenant_id,
+            company: company ? { id: company.id, name: company.name, logo_url: logoUrl(company) } : null,
+            role: role ? { id: role.id, name: role.name, is_system: role.is_system } : null,
+            permissions,
+        };
+    }
+
+    /**
+     * The role a request asks for: by id, by the legacy 'admin'/'agent' name, or the company default.
+     * Picking anything but the default takes roles.manage, so staff managers can't hand out Admin.
+     */
+    private async resolveRole(choice: { role_id?: string; user_role?: string }, requester: Requester) {
+        const picksDefault = choice.role_id === undefined && choice.user_role !== 'admin';
+        if (!picksDefault && !can(requester, 'roles.manage')) {
+            throw new ForbiddenException("Only someone who can manage roles can choose a member's role");
+        }
+        const where = choice.role_id ? { id: choice.role_id } : choice.user_role === 'admin' ? { is_system: true } : { is_default: true };
+        const role = await this.userRepository.manager.findOne(Role, { where: { ...where, tenant_id: tenantId() } });
+        if (!role) throw new BadRequestException(choice.role_id ? 'role_id does not match a role' : 'The company has no default role');
+        return role;
     }
 
     async setSuspended(id: number, suspended: boolean, requesterId: number) {
         if (id === requesterId) throw new BadRequestException('You cannot suspend your own account');
 
-        const user = await this.userRepository.findOne({ where: { id } });
+        const user = await this.userRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!user) throw new NotFoundException('User not found');
 
         user.suspended = suspended;
@@ -182,19 +209,36 @@ export class AuthService {
         return this.safeUser(user);
     }
 
+    async transferLeads(fromId: number, toId: number) {
+        if (fromId === toId) throw new BadRequestException('Pick a different staff member to receive the leads');
+        const [from, to] = await Promise.all([
+            this.userRepository.findOne({ where: { id: fromId, tenant_id: tenantId() } }),
+            this.userRepository.findOne({ where: { id: toId, tenant_id: tenantId() } }),
+        ]);
+        if (!from) throw new NotFoundException('User not found');
+        if (!to) throw new BadRequestException('to_user_id does not match an existing user');
+        if (to.suspended || to.blocked) throw new BadRequestException(`${to.first_name} ${to.last_name} cannot take leads while deactivated`);
+
+        return this.userRepository.manager.transaction(async (manager) => {
+            const [, leads] = await manager.query(`UPDATE "lead" SET assigned_to_id = $2, updated_at = NOW() WHERE assigned_to_id = $1`, [fromId, toId]);
+            const [, customers] = await manager.query(`UPDATE "customers" SET assigned_to_id = $2, updated_at = NOW() WHERE assigned_to_id = $1`, [fromId, toId]);
+            return { leads: Number(leads), customers: Number(customers) };
+        });
+    }
+
     async setStarred(id: number, isStarred: boolean) {
-        const result = await this.userRepository.update({ id }, { is_starred: isStarred });
+        const result = await this.userRepository.update({ id, tenant_id: tenantId() }, { is_starred: isStarred });
         if (!result.affected) throw new NotFoundException('User not found');
         return { id, is_starred: isStarred };
     }
 
     async updateProfile(id: number, dto: UpdateStaffProfileDto) {
-        const user = await this.userRepository.findOne({ where: { id } });
+        const user = await this.userRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!user) throw new NotFoundException('User not found');
 
         if (dto.manager_id != null) {
             if (dto.manager_id === id) throw new BadRequestException('A member cannot be their own line manager');
-            const manager = await this.userRepository.findOne({ where: { id: dto.manager_id } });
+            const manager = await this.userRepository.findOne({ where: { id: dto.manager_id, tenant_id: tenantId() } });
             if (!manager) throw new BadRequestException('manager_id does not match an existing user');
         }
 
@@ -220,7 +264,10 @@ export class AuthService {
         };
 
         const inTab = (tab: StaffTab) => {
-            const qb = this.userRepository.createQueryBuilder('user').where(tabSql[tab]);
+            const qb = this.userRepository
+                .createQueryBuilder('user')
+                .where(tabSql[tab])
+                .andWhere('user.tenant_id = :tenantId', { tenantId: tenantId() });
             if (query.department) qb.andWhere('user.department = :department', { department: query.department });
             if (query.designation) qb.andWhere('user.designation = :designation', { designation: query.designation });
             if (query.region) qb.andWhere('user.region = :region', { region: query.region });
@@ -256,7 +303,7 @@ export class AuthService {
         const managerIds = [...new Set(users.map((user) => user.manager_id).filter((id) => id !== null))];
         const [load, managers] = await Promise.all([
             this.leadLoad(users.map((user) => user.id)),
-            managerIds.length > 0 ? this.userRepository.find({ where: { id: In(managerIds) } }) : [],
+            managerIds.length > 0 ? this.userRepository.find({ where: { id: In(managerIds), tenant_id: tenantId() } }) : [],
         ]);
         const managerById = new Map(managers.map((manager) => [manager.id, manager]));
 
@@ -286,6 +333,7 @@ export class AuthService {
             .createQueryBuilder('user')
             .select(`DISTINCT user.${column}`, 'value')
             .where(`user.${column} IS NOT NULL`)
+            .andWhere('user.tenant_id = :tenantId', { tenantId: tenantId() })
             .orderBy('value', 'ASC')
             .getRawMany<{ value: string }>();
         return rows.map((row) => row.value);
@@ -319,13 +367,13 @@ export class AuthService {
     }
 
     private async findTeam(id: string) {
-        const team = await this.teamRepository.findOne({ where: { id } });
+        const team = await this.teamRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!team) throw new BadRequestException('team_id does not match an existing team');
         return team;
     }
 
     async setTeam(id: number, teamId: string | null) {
-        const user = await this.userRepository.findOne({ where: { id } });
+        const user = await this.userRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!user) throw new NotFoundException('User not found');
 
         const team = teamId ? await this.findTeam(teamId) : null;
@@ -338,6 +386,7 @@ export class AuthService {
     /** The whole team — admins included — for the team page. listAgents() stays assignment-only. */
     async listUsers() {
         const users = await this.userRepository.find({
+            where: { tenant_id: tenantId() },
             order: { created_at: 'DESC' },
         });
         return users.map((user) => this.safeUser(user));
@@ -345,7 +394,7 @@ export class AuthService {
 
     async listAgents() {
         const agents = await this.userRepository.find({
-            where: { user_role: 'agent', blocked: false, suspended: false },
+            where: { user_role: 'agent', blocked: false, suspended: false, tenant_id: tenantId() },
             order: { first_name: 'ASC' },
         });
         return agents.map((agent) => ({

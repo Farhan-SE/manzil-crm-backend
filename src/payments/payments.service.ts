@@ -1,9 +1,10 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Payment } from './payment.entity.js';
 import { Lead } from '../leads/lead.entity.js';
 import { User } from '../auth/user.entity.js';
+import { assertClientHasCnic } from '../leads/stage-change.js';
 import {
     CreatePaymentDto,
     FindPaymentsDto,
@@ -11,8 +12,9 @@ import {
     RecordPaymentDto,
     type PaymentTab,
 } from './payment.dto.js';
+import { tenantId } from '../tenants/tenant-context.js';
+import { assertReaches, narrowToOwners, scopedUserIds, type Requester } from '../access/access.js';
 
-type Requester = { userId: number; role: string };
 
 /**
  * Where a payment stands, most pressing first: money waiting on Accounts, then fully paid,
@@ -46,7 +48,7 @@ export class PaymentsService {
     ) { }
 
     async create(dto: CreatePaymentDto, requester: Requester) {
-        const lead = await this.leadRepository.findOne({ where: { id: dto.lead_id } });
+        const lead = await this.leadRepository.findOne({ where: { id: dto.lead_id, tenant_id: tenantId() } });
         if (!lead) throw new BadRequestException('lead_id does not match an existing lead');
 
         const payment = await this.paymentRepository.save(
@@ -58,7 +60,7 @@ export class PaymentsService {
                 created_by: { id: requester.userId } as User,
             }),
         );
-        return this.findOne(payment.id, requester);
+        return this.findOne(payment.id);
     }
 
     /** Paged, with a count for each tab under the same filters. */
@@ -67,8 +69,9 @@ export class PaymentsService {
         const limit = query.limit ?? 10;
         const status = paymentStatusSql('payment');
 
+        const owners = await scopedUserIds(this.paymentRepository.manager, requester, 'payments.view');
         const inTab = (tab: PaymentTab) => {
-            const qb = this.scopedQuery(requester);
+            const qb = this.scopedQuery(owners);
             if (tab !== 'all') qb.andWhere(`(${status}) IN (:...tabStatuses)`, { tabStatuses: TAB_STATUSES[tab] });
             if (query.project_id) qb.andWhere('lead.project_id = :projectId', { projectId: query.project_id });
             if (query.payment_type) qb.andWhere('payment.payment_type = :paymentType', { paymentType: query.payment_type });
@@ -103,16 +106,19 @@ export class PaymentsService {
         };
     }
 
-    async findOne(id: string, requester: Requester) {
-        const payment = await this.scopedQuery(requester).andWhere('payment.id = :id', { id }).getOne();
+    /** With a requester, only a payment within their payments.view scope is found. */
+    async findOne(id: string, requester?: Requester) {
+        const owners = requester ? await scopedUserIds(this.paymentRepository.manager, requester, 'payments.view') : null;
+        const payment = await this.scopedQuery(owners).andWhere('payment.id = :id', { id }).getOne();
         if (!payment) throw new NotFoundException('Payment not found');
         return this.serialize(payment);
     }
 
     /** The four figures above the ledger, under the caller's scope. */
     async summary(requester: Requester) {
-        const scope = requester.role === 'admin' ? '' : 'AND l.assigned_to_id = $1';
-        const params = requester.role === 'admin' ? [] : [requester.userId];
+        const owners = await scopedUserIds(this.paymentRepository.manager, requester, 'payments.view');
+        const scope = owners === null ? '' : 'AND l.assigned_to_id = ANY($2::int[])';
+        const params = owners === null ? [tenantId()] : [tenantId(), owners];
         const status = paymentStatusSql('p');
         const rows: Record<string, string>[] = await this.paymentRepository.query(
             `SELECT
@@ -125,12 +131,13 @@ export class PaymentsService {
                 COALESCE(SUM(p.received_amount) FILTER (WHERE (${status}) = 'unverified'), 0) AS unverified_amount
              FROM "payment" p
              JOIN "lead" l ON l.id = p.lead_id
-             WHERE 1 = 1 ${scope}`,
+             WHERE p.tenant_id = $1 ${scope}`,
             params,
         );
         const row = rows[0] ?? {};
         const targets: { value: string }[] = await this.paymentRepository.query(
-            `SELECT value FROM "target" WHERE metric = 'collections' AND period = TO_CHAR(NOW(), 'YYYY-MM')`,
+            `SELECT value FROM "target" WHERE tenant_id = $1 AND metric = 'collections' AND period = TO_CHAR(NOW(), 'YYYY-MM')`,
+            [tenantId()],
         );
         return {
             collections_month: Number(row.collections_month ?? 0),
@@ -147,14 +154,13 @@ export class PaymentsService {
 
     /** Adds money against the payment. It stays unverified until Accounts confirms the receipt. */
     async record(id: string, dto: RecordPaymentDto, requester: Requester) {
-        const payment = await this.paymentRepository.findOne({ where: { id }, relations: { lead: { assigned_to: true } } });
+        const payment = await this.paymentRepository.findOne({ where: { id, tenant_id: tenantId() }, relations: { lead: { assigned_to: true } } });
         if (!payment) throw new NotFoundException('Payment not found');
-        if (requester.role !== 'admin' && payment.lead.assigned_to?.id !== requester.userId) {
-            throw new ForbiddenException('You can only record payments on leads assigned to you');
-        }
+        await assertReaches(this.paymentRepository.manager, requester, 'payments.record', payment.lead.assigned_to?.id, 'Your role cannot record payments on this lead');
 
         const balance = Number(payment.amount) - Number(payment.received_amount);
         if (dto.amount > balance) throw new BadRequestException('That is more than the balance still owed');
+        await assertClientHasCnic(this.paymentRepository.manager, payment.lead.customer_id);
 
         payment.received_amount = String(Number(payment.received_amount) + dto.amount);
         payment.received_at = new Date();
@@ -164,19 +170,25 @@ export class PaymentsService {
         payment.verified = false;
         payment.verified_by = null;
         await this.paymentRepository.save(payment);
-        return this.findOne(id, requester);
+        return this.findOne(id);
     }
 
-    /** Admin-only at the controller. */
+    /** Takes payments.verify at the controller. */
     async verify(id: string, requester: Requester) {
-        const payment = await this.paymentRepository.findOne({ where: { id } });
+        const payment = await this.paymentRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!payment) throw new NotFoundException('Payment not found');
         if (Number(payment.received_amount) <= 0) throw new BadRequestException('Nothing has been received to verify');
 
         payment.verified = true;
         payment.verified_by = { id: requester.userId } as User;
         await this.paymentRepository.save(payment);
-        return this.findOne(id, requester);
+        // Verifying from Accounts settles the matching approval request as well.
+        await this.paymentRepository.query(
+            `UPDATE "approval" SET status = 'approved', reviewer_id = $2, decided_at = NOW(), updated_at = NOW()
+             WHERE payment_id = $1 AND status IN ('pending', 'returned')`,
+            [id, requester.userId],
+        );
+        return this.findOne(id);
     }
 
     async setStarred(id: string, isStarred: boolean, requester: Requester) {
@@ -185,15 +197,14 @@ export class PaymentsService {
         return { id, is_starred: isStarred };
     }
 
-    /** Admins see the whole ledger; an agent sees payments on their own leads. */
-    private scopedQuery(requester: Requester) {
+    /** `owners` from payments.view: the payments on leads they hold, or the whole ledger when null. */
+    private scopedQuery(owners: number[] | null) {
         const qb = this.paymentRepository
             .createQueryBuilder('payment')
             .leftJoinAndSelect('payment.lead', 'lead')
             .leftJoinAndSelect('lead.project', 'project')
-            .where('1 = 1');
-        if (requester.role !== 'admin') qb.andWhere('lead.assigned_to_id = :userId', { userId: requester.userId });
-        return qb;
+            .where('payment.tenant_id = :tenantId', { tenantId: tenantId() });
+        return narrowToOwners(qb, 'lead.assigned_to_id', owners);
     }
 
     private serialize(payment: Payment) {

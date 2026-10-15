@@ -26,6 +26,9 @@ export class Lead {
     @PrimaryGeneratedColumn('uuid')
     id: string;
 
+    @Column({ type: 'uuid' })
+    tenant_id: string;
+
     // The short, human-facing lead ID. The uuid stays the key used in URLs and relations.
     @Column({ type: 'int' })
     @Generated('increment')

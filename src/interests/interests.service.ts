@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { tenantId } from '../tenants/tenant-context.js';
 import { Interest } from './interest.entity.js';
 import { CreateInterestDto } from './create-interest.dto.js';
 import { UpdateInterestDto } from './update-interest.dto.js';
@@ -13,7 +14,7 @@ export class InterestsService {
     ) { }
 
     async create(dto: CreateInterestDto) {
-        const existing = await this.interestRepository.findOne({ where: { name: dto.name } });
+        const existing = await this.interestRepository.findOne({ where: { name: dto.name, tenant_id: tenantId() } });
         if (existing) throw new BadRequestException('An interest with this name already exists');
 
         const interest = this.interestRepository.create({ name: dto.name });
@@ -22,14 +23,14 @@ export class InterestsService {
     }
 
     findAll() {
-        return this.interestRepository.find({ order: { created_at: 'ASC' } });
+        return this.interestRepository.find({ where: { tenant_id: tenantId() }, order: { created_at: 'ASC' } });
     }
 
     async update(id: string, dto: UpdateInterestDto) {
-        const interest = await this.interestRepository.findOne({ where: { id } });
+        const interest = await this.interestRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!interest) throw new NotFoundException('Interest not found');
 
-        const existing = await this.interestRepository.findOne({ where: { name: dto.name } });
+        const existing = await this.interestRepository.findOne({ where: { name: dto.name, tenant_id: tenantId() } });
         if (existing && existing.id !== id) throw new BadRequestException('An interest with this name already exists');
 
         interest.name = dto.name;
@@ -38,7 +39,7 @@ export class InterestsService {
     }
 
     async remove(id: string) {
-        const interest = await this.interestRepository.findOne({ where: { id } });
+        const interest = await this.interestRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!interest) throw new NotFoundException('Interest not found');
         await this.interestRepository.remove(interest);
         return { status: 'Success', message: 'Interest deleted' };

@@ -105,6 +105,12 @@ export class UpdateStaffProfileDto {
     joined_on?: string | null;
 }
 
+export class TransferLeadsDto {
+    @Type(() => Number)
+    @IsInt()
+    to_user_id: number;
+}
+
 export class SuspendUserDto {
     @IsBoolean()
     suspended: boolean;

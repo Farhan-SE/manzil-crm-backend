@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Location } from './location.entity.js';
 import { FindLocationsDto, LOCATION_TABS, UpdateLocationDto, type LocationTab } from './location.dto.js';
+import { tenantId } from '../tenants/tenant-context.js';
 
 type Coverage = { projects: number; available_units: number; project: string | null; unit_types: string | null };
 
@@ -20,7 +21,7 @@ export class LocationsService {
         const limit = query.limit ?? 10;
 
         const inTab = (tab: LocationTab) => {
-            const qb = this.locationRepository.createQueryBuilder('location');
+            const qb = this.locationRepository.createQueryBuilder('location').where('location.tenant_id = :tenantId', { tenantId: tenantId() });
             if (tab !== 'all') qb.andWhere('location.is_active = :isActive', { isActive: tab === 'active' });
             if (query.city) qb.andWhere('location.city = :city', { city: query.city });
             if (query.region) qb.andWhere('location.region = :region', { region: query.region });
@@ -67,7 +68,7 @@ export class LocationsService {
     }
 
     async update(id: string, dto: UpdateLocationDto) {
-        const location = await this.locationRepository.findOne({ where: { id } });
+        const location = await this.locationRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!location) throw new NotFoundException('Location not found');
 
         if (dto.name !== undefined) location.name = dto.name.trim();
@@ -81,7 +82,7 @@ export class LocationsService {
     }
 
     async setStarred(id: string, isStarred: boolean) {
-        const result = await this.locationRepository.update({ id }, { is_starred: isStarred });
+        const result = await this.locationRepository.update({ id, tenant_id: tenantId() }, { is_starred: isStarred });
         if (!result.affected) throw new NotFoundException('Location not found');
         return { id, is_starred: isStarred };
     }
@@ -94,7 +95,8 @@ export class LocationsService {
 
         const qb = this.locationRepository
             .createQueryBuilder('location')
-            .where('LOWER(location.name) = LOWER(:name)', { name: trimmedName });
+            .where('LOWER(location.name) = LOWER(:name)', { name: trimmedName })
+            .andWhere('location.tenant_id = :tenantId', { tenantId: tenantId() });
         if (trimmedCity) qb.andWhere('LOWER(location.city) = LOWER(:city)', { city: trimmedCity });
         else qb.andWhere('location.city IS NULL');
 
@@ -112,6 +114,7 @@ export class LocationsService {
             .createQueryBuilder('location')
             .select(`DISTINCT location.${column}`, 'value')
             .where(`location.${column} IS NOT NULL`)
+            .andWhere('location.tenant_id = :tenantId', { tenantId: tenantId() })
             .orderBy('value', 'ASC')
             .getRawMany<{ value: string }>();
         return rows.map((row) => row.value);

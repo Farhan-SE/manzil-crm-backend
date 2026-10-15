@@ -4,8 +4,9 @@ import { Repository } from 'typeorm';
 import { Lead } from '../leads/lead.entity.js';
 import { FollowUp } from '../follow-ups/follow-up.entity.js';
 import { Customers } from '../customer/customer.entity.js';
+import { tenantId } from '../tenants/tenant-context.js';
+import { narrowToOwners, scopedUserIds, type Requester } from '../access/access.js';
 
-type Requester = { userId: number; role: string };
 
 /** No longer in play — won or lost. Mirrors leads.findActive. Only 'sold' counts as closed volume. */
 const SETTLED_STAGES = ['sold', 'lost'];
@@ -21,9 +22,9 @@ export class StatsService {
         private customerRepository: Repository<Customers>,
     ) { }
 
-    /** Admins see the whole system; an agent sees only what is assigned to them. */
+    /** Figures over the leads the requester's leads.view scope reaches. */
     async dashboard(requester: Requester) {
-        const isAdmin = requester.role === 'admin';
+        const owners = await scopedUserIds(this.leadRepository.manager, requester, 'leads.view');
 
         const [
             openLeads,
@@ -37,20 +38,20 @@ export class StatsService {
             soldThisMonth,
             tasksDueToday,
         ] = await Promise.all([
-            this.countOpenLeads(requester, isAdmin),
-            this.sumOpenBudget(requester, isAdmin),
-            this.sumSoldBudget(requester, isAdmin),
-            this.countOverdueFollowUps(requester, isAdmin),
-            this.customerRepository.count(),
-            this.countLeadsAtStage(requester, isAdmin, 'sold'),
-            this.countLeadsCreatedInMonth(requester, isAdmin, 0),
-            this.countLeadsCreatedInMonth(requester, isAdmin, 1),
-            this.soldThisMonth(requester, isAdmin),
-            this.countOpenFollowUpsDueToday(requester, isAdmin),
+            this.countOpenLeads(owners),
+            this.sumOpenBudget(owners),
+            this.sumSoldBudget(owners),
+            this.countOverdueFollowUps(owners),
+            this.customerRepository.count({ where: { tenant_id: tenantId() } }),
+            this.countLeadsAtStage(owners, 'sold'),
+            this.countLeadsCreatedInMonth(owners, 0),
+            this.countLeadsCreatedInMonth(owners, 1),
+            this.soldThisMonth(owners),
+            this.countOpenFollowUpsDueToday(owners),
         ]);
 
         return {
-            scope: isAdmin ? 'system' : 'own',
+            scope: owners === null ? 'system' : requester.permissions['leads.view'],
             open_leads: openLeads,
             pipeline_value: pipelineValue,
             closed_volume: closedVolume,
@@ -67,9 +68,9 @@ export class StatsService {
 
     /** Sold budget per calendar month for the last six months, oldest first. Same scoping as the dashboard. */
     async salesPerformance(requester: Requester) {
-        const isAdmin = requester.role === 'admin';
+        const owners = await scopedUserIds(this.leadRepository.manager, requester, 'leads.view');
         const month = "TO_CHAR(DATE_TRUNC('month', lead.sold_at), 'YYYY-MM')";
-        const rows = await this.scopeLeads(requester, isAdmin)
+        const rows = await this.scopeLeads(owners)
             .select(month, 'month')
             .addSelect('COALESCE(SUM(lead.budget), 0)', 'total')
             .addSelect('COUNT(*)', 'count')
@@ -96,10 +97,11 @@ export class StatsService {
             .leftJoinAndSelect('followUp.lead', 'lead')
             .leftJoin('lead.assigned_to', 'assignedTo')
             .leftJoinAndSelect('lead.project', 'project')
+            .where('followUp.tenant_id = :tenantId', { tenantId: tenantId() })
             .orderBy('COALESCE(followUp.completed_at, followUp.created_at)', 'DESC')
             // limit, not take: take can't order by an expression, and these joins never multiply rows.
             .limit(limit);
-        if (requester.role !== 'admin') qb.andWhere('assignedTo.id = :userId', { userId: requester.userId });
+        narrowToOwners(qb, 'assignedTo.id', await scopedUserIds(this.leadRepository.manager, requester, 'leads.view'));
 
         const followUps = await qb.getMany();
         return followUps.map((followUp) => ({
@@ -114,36 +116,37 @@ export class StatsService {
         }));
     }
 
-    private scopeLeads(requester: Requester, isAdmin: boolean) {
+    private scopeLeads(owners: number[] | null) {
         const qb = this.leadRepository
             .createQueryBuilder('lead')
-            .leftJoin('lead.assigned_to', 'assignedTo');
-        if (!isAdmin) qb.andWhere('assignedTo.id = :userId', { userId: requester.userId });
+            .leftJoin('lead.assigned_to', 'assignedTo')
+            .where('lead.tenant_id = :tenantId', { tenantId: tenantId() });
+        narrowToOwners(qb, 'assignedTo.id', owners);
         return qb;
     }
 
-    private countOpenLeads(requester: Requester, isAdmin: boolean) {
-        return this.scopeLeads(requester, isAdmin)
+    private countOpenLeads(owners: number[] | null) {
+        return this.scopeLeads(owners)
             .andWhere('lead.stage NOT IN (:...settled)', { settled: SETTLED_STAGES })
             .getCount();
     }
 
-    private countLeadsAtStage(requester: Requester, isAdmin: boolean, stage: string) {
-        return this.scopeLeads(requester, isAdmin)
+    private countLeadsAtStage(owners: number[] | null, stage: string) {
+        return this.scopeLeads(owners)
             .andWhere('lead.stage = :stage', { stage })
             .getCount();
     }
 
-    private async sumOpenBudget(requester: Requester, isAdmin: boolean) {
-        const row = await this.scopeLeads(requester, isAdmin)
+    private async sumOpenBudget(owners: number[] | null) {
+        const row = await this.scopeLeads(owners)
             .select('COALESCE(SUM(lead.budget), 0)', 'total')
             .andWhere('lead.stage NOT IN (:...settled)', { settled: SETTLED_STAGES })
             .getRawOne<{ total: string }>();
         return Number(row?.total ?? 0);
     }
 
-    private async sumSoldBudget(requester: Requester, isAdmin: boolean) {
-        const row = await this.scopeLeads(requester, isAdmin)
+    private async sumSoldBudget(owners: number[] | null) {
+        const row = await this.scopeLeads(owners)
             .select('COALESCE(SUM(lead.budget), 0)', 'total')
             .andWhere('lead.stage = :stage', { stage: 'sold' })
             .getRawOne<{ total: string }>();
@@ -151,8 +154,8 @@ export class StatsService {
     }
 
     /** `monthsAgo` 0 is the current calendar month, 1 the one before it. */
-    private countLeadsCreatedInMonth(requester: Requester, isAdmin: boolean, monthsAgo: number) {
-        return this.scopeLeads(requester, isAdmin)
+    private countLeadsCreatedInMonth(owners: number[] | null, monthsAgo: number) {
+        return this.scopeLeads(owners)
             .andWhere(
                 `lead.created_at >= DATE_TRUNC('month', NOW()) - make_interval(months => :monthsAgo)
                  AND lead.created_at < DATE_TRUNC('month', NOW()) - make_interval(months => :monthsAgo - 1)`,
@@ -161,8 +164,8 @@ export class StatsService {
             .getCount();
     }
 
-    private async soldThisMonth(requester: Requester, isAdmin: boolean) {
-        const row = await this.scopeLeads(requester, isAdmin)
+    private async soldThisMonth(owners: number[] | null) {
+        const row = await this.scopeLeads(owners)
             .select('COUNT(*)', 'count')
             .addSelect('COALESCE(SUM(lead.budget), 0)', 'total')
             .andWhere('lead.stage = :stage', { stage: 'sold' })
@@ -171,27 +174,29 @@ export class StatsService {
         return { count: Number(row?.count ?? 0), total: Number(row?.total ?? 0) };
     }
 
-    private countOpenFollowUpsDueToday(requester: Requester, isAdmin: boolean) {
+    private countOpenFollowUpsDueToday(owners: number[] | null) {
         const qb = this.followUpRepository
             .createQueryBuilder('followUp')
             .leftJoin('followUp.lead', 'lead')
             .leftJoin('lead.assigned_to', 'assignedTo')
             .where('followUp.completed = false')
+            .andWhere('followUp.tenant_id = :tenantId', { tenantId: tenantId() })
             .andWhere('followUp.due_date = CURRENT_DATE');
 
-        if (!isAdmin) qb.andWhere('assignedTo.id = :userId', { userId: requester.userId });
+        narrowToOwners(qb, 'assignedTo.id', owners);
         return qb.getCount();
     }
 
-    private countOverdueFollowUps(requester: Requester, isAdmin: boolean) {
+    private countOverdueFollowUps(owners: number[] | null) {
         const qb = this.followUpRepository
             .createQueryBuilder('followUp')
             .leftJoin('followUp.lead', 'lead')
             .leftJoin('lead.assigned_to', 'assignedTo')
             .where('followUp.completed = false')
+            .andWhere('followUp.tenant_id = :tenantId', { tenantId: tenantId() })
             .andWhere('(followUp.due_date + followUp.due_time) < NOW()');
 
-        if (!isAdmin) qb.andWhere('assignedTo.id = :userId', { userId: requester.userId });
+        narrowToOwners(qb, 'assignedTo.id', owners);
         return qb.getCount();
     }
 }

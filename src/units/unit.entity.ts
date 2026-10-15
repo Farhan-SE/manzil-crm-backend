@@ -13,6 +13,7 @@ import { Lead } from '../leads/lead.entity.js';
 
 // In sale order: token, partial down payment, complete down payment, sold (closed won).
 export const UNIT_STATUSES = ['available', 'token', 'pdp', 'cdp', 'sold'];
+export const INVENTORY_TYPES = ['direct', 'partner'];
 
 /** One sellable unit of a project — a shop, apartment or plot. */
 @Entity()
@@ -20,6 +21,9 @@ export class Unit {
 
     @PrimaryGeneratedColumn('uuid')
     id: string;
+
+    @Column({ type: 'uuid' })
+    tenant_id: string;
 
     @Column({ type: 'uuid' })
     project_id: string;
@@ -51,6 +55,14 @@ export class Unit {
 
     @Column({ type: 'text', default: 'available' })
     status: string;
+
+    /** The company's own stock (`direct`) or a sales partner's (`partner`). */
+    @Column({ type: 'text', default: 'direct' })
+    inventory_type: string;
+
+    /** Units added by agents wait as `pending` until an admin approves them for sale. */
+    @Column({ type: 'text', default: 'approved' })
+    approval_status: string;
 
     @Column({ type: 'boolean', default: false })
     is_starred: boolean;

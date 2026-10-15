@@ -15,23 +15,31 @@ import { CreatePartnerProjectDto } from './create-partner-project.dto.js';
 import { UpdatePartnerProjectDto } from './update-partner-project.dto.js';
 import { FindPartnerProjectsDto, StarProjectDto } from './find-partner-projects.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
-import { AdminGuard } from '../strategies/admin.guard.js';
+import { Can } from '../access/permission.guard.js';
 import { UserSession } from '../strategies/user.decorator.js';
+import { can, type Requester } from '../access/access.js';
+
+/** The project owner's name and number are for inventory managers only. */
+function withoutOwner<T extends { owner_name: string | null; owner_phone: string | null }>(project: T, user: Requester) {
+    if (can(user, 'inventory.manage')) return project;
+    const { owner_name: _name, owner_phone: _phone, ...rest } = project;
+    return rest;
+}
 
 @Controller('partner-projects')
 @UseGuards(JwtAuthGuard)
 export class PartnerProjectsController {
     constructor(private readonly partnerProjectsService: PartnerProjectsService) { }
 
-    @UseGuards(AdminGuard)
+    @Can('inventory.manage')
     @Post()
     create(@Body() dto: CreatePartnerProjectDto, @UserSession() user: any) {
         return this.partnerProjectsService.create(dto, user.userId);
     }
 
     @Get()
-    findAll(@Query() query: FindPartnerProjectsDto) {
-        return this.partnerProjectsService.findAll(query);
+    async findAll(@Query() query: FindPartnerProjectsDto, @UserSession() user: any) {
+        return (await this.partnerProjectsService.findAll(query)).map((project) => withoutOwner(project, user));
     }
 
     @Get('options')
@@ -40,11 +48,11 @@ export class PartnerProjectsController {
     }
 
     @Get(':id')
-    findOne(@Param('id', ParseUUIDPipe) id: string) {
-        return this.partnerProjectsService.findOne(id);
+    async findOne(@Param('id', ParseUUIDPipe) id: string, @UserSession() user: any) {
+        return withoutOwner(await this.partnerProjectsService.findOne(id), user);
     }
 
-    @UseGuards(AdminGuard)
+    @Can('inventory.manage')
     @Patch(':id')
     update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdatePartnerProjectDto) {
         return this.partnerProjectsService.update(id, dto);
@@ -56,7 +64,7 @@ export class PartnerProjectsController {
         return this.partnerProjectsService.setStarred(id, dto.is_starred);
     }
 
-    @UseGuards(AdminGuard)
+    @Can('inventory.manage')
     @Delete(':id')
     async remove(@Param('id', ParseUUIDPipe) id: string) {
         await this.partnerProjectsService.remove(id);

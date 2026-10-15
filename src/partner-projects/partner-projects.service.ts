@@ -7,6 +7,10 @@ import { CreatePartnerProjectDto } from './create-partner-project.dto.js';
 import { UpdatePartnerProjectDto } from './update-partner-project.dto.js';
 import { FindPartnerProjectsDto } from './find-partner-projects.dto.js';
 import { LocationsService } from '../locations/locations.service.js';
+import { Category } from '../categories/category.entity.js';
+import { Interest } from '../interests/interest.entity.js';
+import { tenantId } from '../tenants/tenant-context.js';
+import { assertOwned } from '../tenants/tenant-scope.js';
 
 type UnitStats = {
     unit_types: string[];
@@ -27,9 +31,12 @@ export class PartnerProjectsService {
     ) { }
 
     async create(dto: CreatePartnerProjectDto, createdById: number) {
+        await this.assertLookupsOwned(dto);
         const project = this.projectRepository.create({
             project_name: dto.project_name,
             developer: dto.developer ?? null,
+            owner_name: dto.owner_name?.trim() || null,
+            owner_phone: dto.owner_phone?.trim() || null,
             category_id: dto.category_id ?? null,
             interest_id: dto.interest_id ?? null,
             city: dto.city ?? null,
@@ -51,12 +58,13 @@ export class PartnerProjectsService {
 
     /** Every project's id and name, for filter dropdowns. */
     findOptions() {
-        return this.projectRepository.find({ select: { id: true, project_name: true }, order: { project_name: 'ASC' } });
+        return this.projectRepository.find({ where: { tenant_id: tenantId() }, select: { id: true, project_name: true }, order: { project_name: 'ASC' } });
     }
 
     async findAll(query: FindPartnerProjectsDto) {
         const qb = this.projectRepository
             .createQueryBuilder('project')
+            .where('project.tenant_id = :tenantId', { tenantId: tenantId() })
             .orderBy('project.created_at', 'DESC');
 
         if (query.search) {
@@ -79,23 +87,26 @@ export class PartnerProjectsService {
     }
 
     async findOne(id: string) {
-        const project = await this.projectRepository.findOne({ where: { id } });
+        const project = await this.projectRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!project) throw new NotFoundException('Partner project not found');
         return this.serialize(project, await this.unitStats([id]));
     }
 
     async setStarred(id: string, isStarred: boolean) {
-        const result = await this.projectRepository.update({ id }, { is_starred: isStarred });
+        const result = await this.projectRepository.update({ id, tenant_id: tenantId() }, { is_starred: isStarred });
         if (!result.affected) throw new NotFoundException('Partner project not found');
         return { id, is_starred: isStarred };
     }
 
     async update(id: string, dto: UpdatePartnerProjectDto) {
-        const project = await this.projectRepository.findOne({ where: { id } });
+        const project = await this.projectRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!project) throw new NotFoundException('Partner project not found');
+        await this.assertLookupsOwned(dto);
 
         if (dto.project_name !== undefined) project.project_name = dto.project_name;
         if (dto.developer !== undefined) project.developer = dto.developer;
+        if (dto.owner_name !== undefined) project.owner_name = dto.owner_name.trim() || null;
+        if (dto.owner_phone !== undefined) project.owner_phone = dto.owner_phone.trim() || null;
         if (dto.category_id !== undefined) project.category_id = dto.category_id;
         if (dto.interest_id !== undefined) project.interest_id = dto.interest_id;
         if (dto.city !== undefined) project.city = dto.city;
@@ -117,9 +128,14 @@ export class PartnerProjectsService {
     }
 
     async remove(id: string) {
-        const project = await this.projectRepository.findOne({ where: { id } });
+        const project = await this.projectRepository.findOne({ where: { id, tenant_id: tenantId() } });
         if (!project) throw new NotFoundException('Partner project not found');
         await this.projectRepository.remove(project);
+    }
+
+    private async assertLookupsOwned(dto: { category_id?: string | null; interest_id?: string | null }) {
+        await assertOwned(this.projectRepository.manager, Category, dto.category_id, 'category_id');
+        await assertOwned(this.projectRepository.manager, Interest, dto.interest_id, 'interest_id');
     }
 
     /** What each project's units add up to — the list shows these instead of making callers page through units. */
@@ -142,7 +158,7 @@ export class PartnerProjectsService {
                     MIN(u.price) AS price_min,
                     MAX(u.price) AS price_max
              FROM "unit" u
-             WHERE u.project_id = ANY($1::uuid[])
+             WHERE u.project_id = ANY($1::uuid[]) AND u.approval_status = 'approved'
              GROUP BY u.project_id`,
             [projectIds],
         );
@@ -172,6 +188,8 @@ export class PartnerProjectsService {
             id: project.id,
             project_name: project.project_name,
             developer: project.developer,
+            owner_name: project.owner_name,
+            owner_phone: project.owner_phone,
             category_id: project.category_id,
             interest_id: project.interest_id,
             city: project.city,

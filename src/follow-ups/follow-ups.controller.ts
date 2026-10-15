@@ -18,7 +18,7 @@ import { FindTasksDto, FindTodosDto, SetTaskStatusDto, StarFollowUpDto } from '.
 import { LogTaskDto, WeekLoadDto } from './log-task.dto.js';
 import { FindLeadsDto } from '../leads/find-leads.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
-import { AdminGuard } from '../strategies/admin.guard.js';
+import { Can } from '../access/permission.guard.js';
 import { UserSession } from '../strategies/user.decorator.js';
 
 @Controller('follow-ups')
@@ -26,14 +26,14 @@ import { UserSession } from '../strategies/user.decorator.js';
 export class FollowUpsController {
     constructor(private readonly followUpsService: FollowUpsService) { }
 
-    @UseGuards(AdminGuard)
+    @Can('tasks.manage')
     @Post()
     async create(@Body() dto: CreateFollowUpDto, @UserSession() user: any) {
         await this.followUpsService.create(dto, user.userId);
         return { message: 'Follow-up created successfully' };
     }
 
-    // No AdminGuard: the service lets the lead's own agent through, admins for any lead.
+    // No permission guard: the service checks leads.edit against the lead's owner.
     @Post('log')
     async logTask(@Body() dto: LogTaskDto, @UserSession() user: any) {
         await this.followUpsService.logTask(dto, user);
@@ -65,7 +65,7 @@ export class FollowUpsController {
         return this.followUpsService.findTasks(query, user);
     }
 
-    @UseGuards(AdminGuard)
+    @Can('tasks.manage')
     @Patch(':id')
     async update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateFollowUpDto) {
         await this.followUpsService.update(id, dto);

@@ -1,4 +1,6 @@
-import { IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Min, ValidateNested } from 'class-validator';
+import { StagePaymentDto } from './stage-change.js';
 import { LEAD_STAGES } from './lead.entity.js';
 
 export class UpdateLeadDto {
@@ -46,6 +48,12 @@ export class UpdateLeadDto {
     @IsOptional()
     @IsIn(LEAD_STAGES)
     stage?: string;
+
+    /** Required when `stage` moves the lead forward into Pre-Closure or Sold. */
+    @IsOptional()
+    @ValidateNested()
+    @Type(() => StagePaymentDto)
+    payment?: StagePaymentDto;
 
     @IsOptional()
     @IsInt()

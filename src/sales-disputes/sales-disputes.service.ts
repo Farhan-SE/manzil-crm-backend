@@ -10,8 +10,9 @@ import {
     FindSalesDisputesDto,
     type DisputeTab,
 } from './sales-dispute.dto.js';
+import { tenantId } from '../tenants/tenant-context.js';
+import { can, scopedUserIds, type Requester } from '../access/access.js';
 
-type Requester = { userId: number; role: string };
 
 /** A case waiting on evidence is still under review, so it has no tab of its own. */
 const TAB_STATUSES: Record<Exclude<DisputeTab, 'all'>, string[]> = {
@@ -33,11 +34,11 @@ export class SalesDisputesService {
     ) { }
 
     async create(dto: CreateSalesDisputeDto, requester: Requester) {
-        const lead = await this.leadRepository.findOne({ where: { id: dto.lead_id } });
+        const lead = await this.leadRepository.findOne({ where: { id: dto.lead_id, tenant_id: tenantId() } });
         if (!lead) throw new BadRequestException('lead_id does not match an existing lead');
 
         if (dto.review_owner_id) {
-            const owner = await this.userRepository.findOne({ where: { id: dto.review_owner_id } });
+            const owner = await this.userRepository.findOne({ where: { id: dto.review_owner_id, tenant_id: tenantId() } });
             if (!owner) throw new BadRequestException('review_owner_id does not match an existing user');
         }
 
@@ -53,7 +54,7 @@ export class SalesDisputesService {
                 resolution_due: dto.resolution_due ?? null,
             }),
         );
-        return this.findOne(dispute.id, requester);
+        return this.findOne(dispute.id);
     }
 
     /** Paged, with a count for each tab under the same filters. */
@@ -61,8 +62,9 @@ export class SalesDisputesService {
         const page = query.page ?? 1;
         const limit = query.limit ?? 10;
 
+        const owners = await scopedUserIds(this.disputeRepository.manager, requester, 'disputes.view');
         const inTab = (tab: DisputeTab) => {
-            const qb = this.scopedQuery(requester);
+            const qb = this.scopedQuery(owners);
             if (tab !== 'all') qb.andWhere('dispute.status IN (:...tabStatuses)', { tabStatuses: TAB_STATUSES[tab] });
             if (query.status) qb.andWhere('dispute.status = :status', { status: query.status });
             if (query.review_owner_id) qb.andWhere('reviewOwner.id = :ownerId', { ownerId: query.review_owner_id });
@@ -98,24 +100,26 @@ export class SalesDisputesService {
         };
     }
 
-    async findOne(id: string, requester: Requester) {
-        const dispute = await this.scopedQuery(requester).andWhere('dispute.id = :id', { id }).getOne();
+    /** With a requester, only a case within their disputes.view scope is found. */
+    async findOne(id: string, requester?: Requester) {
+        const owners = requester ? await scopedUserIds(this.disputeRepository.manager, requester, 'disputes.view') : null;
+        const dispute = await this.scopedQuery(owners).andWhere('dispute.id = :id', { id }).getOne();
         if (!dispute) throw new NotFoundException('Sales dispute not found');
         return this.serialize(dispute);
     }
 
-    /** Only an admin or the case's reviewer moves it along. */
+    /** Only the case's reviewer, or a role with disputes.manage, moves it along. */
     async setStatus(id: string, status: string, requester: Requester) {
-        const dispute = await this.disputeRepository.findOne({ where: { id }, relations: { review_owner: true } });
+        const dispute = await this.disputeRepository.findOne({ where: { id, tenant_id: tenantId() }, relations: { review_owner: true } });
         if (!dispute) throw new NotFoundException('Sales dispute not found');
-        if (requester.role !== 'admin' && dispute.review_owner?.id !== requester.userId) {
-            throw new ForbiddenException('Only an admin or the review owner can change a case status');
+        if (!can(requester, 'disputes.manage') && dispute.review_owner?.id !== requester.userId) {
+            throw new ForbiddenException('Only the review owner can change this case status');
         }
 
         dispute.status = status;
         dispute.resolved_at = status === 'resolved' ? new Date() : null;
         await this.disputeRepository.save(dispute);
-        return this.findOne(id, requester);
+        return this.findOne(id);
     }
 
     async setStarred(id: string, isStarred: boolean, requester: Requester) {
@@ -124,19 +128,19 @@ export class SalesDisputesService {
         return { id, is_starred: isStarred };
     }
 
-    /** Admins see every case; an agent sees those they raised, review, or that are on their own leads. */
-    private scopedQuery(requester: Requester) {
+    /** `owners` from disputes.view: cases they raised, review, or that sit on their leads; every case when null. */
+    private scopedQuery(owners: number[] | null) {
         const qb = this.disputeRepository
             .createQueryBuilder('dispute')
             .leftJoinAndSelect('dispute.lead', 'lead')
             .leftJoinAndSelect('lead.project', 'project')
             .leftJoinAndSelect('dispute.raised_by', 'raisedBy')
             .leftJoinAndSelect('dispute.review_owner', 'reviewOwner')
-            .where('1 = 1');
-        if (requester.role !== 'admin') {
+            .where('dispute.tenant_id = :tenantId', { tenantId: tenantId() });
+        if (owners !== null) {
             qb.andWhere(
-                '(raisedBy.id = :userId OR reviewOwner.id = :userId OR lead.assigned_to_id = :userId)',
-                { userId: requester.userId },
+                '(raisedBy.id IN (:...owners) OR reviewOwner.id IN (:...owners) OR lead.assigned_to_id IN (:...owners))',
+                { owners },
             );
         }
         return qb;

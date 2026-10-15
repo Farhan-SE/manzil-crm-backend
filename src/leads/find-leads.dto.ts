@@ -2,7 +2,7 @@ import { Type } from 'class-transformer';
 import { IsBoolean, IsIn, IsInt, IsNumber, IsOptional, IsString, IsUUID, Matches, Max, Min } from 'class-validator';
 import { DUE_WINDOWS, type DueWindow } from '../follow-ups/due-windows.js';
 
-export const LEAD_TABS = ['all', 'new', 'recommended', 'watchlist'] as const;
+export const LEAD_TABS = ['all', 'new', 'favourites'] as const;
 export type LeadTab = (typeof LEAD_TABS)[number];
 
 export const LEAD_SEARCH_FIELDS = ['lead_id', 'name', 'number', 'city'] as const;
@@ -14,6 +14,11 @@ export class StarLeadDto {
 }
 
 export class FindLeadsDto {
+    /** Only this client's leads. */
+    @IsOptional()
+    @IsUUID()
+    customer_id?: string;
+
     @IsOptional()
     @Type(() => Number)
     @IsInt()
@@ -53,7 +58,7 @@ export class FindLeadsDto {
     @IsIn(['true', 'false'])
     starred?: string;
 
-    /** `new` = no follow-up logged yet, `recommended` = hot and still open, `watchlist` = starred. */
+    /** `new` = no follow-up logged yet, `favourites` = starred. */
     @IsOptional()
     @IsIn(LEAD_TABS)
     tab?: LeadTab;

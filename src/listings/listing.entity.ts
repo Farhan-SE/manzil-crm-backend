@@ -16,6 +16,9 @@ export class Listing {
     @PrimaryGeneratedColumn('uuid')
     id: string;
 
+    @Column({ type: 'uuid' })
+    tenant_id: string;
+
     @Column()
     area_name: string;
 

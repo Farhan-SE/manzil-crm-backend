@@ -29,6 +29,9 @@ export class SalesDispute {
     @PrimaryGeneratedColumn('uuid')
     id: string;
 
+    @Column({ type: 'uuid' })
+    tenant_id: string;
+
     // The short, human-facing case ID, shown as DSP-024.
     @Column({ type: 'int' })
     @Generated('increment')

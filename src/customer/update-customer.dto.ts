@@ -8,6 +8,14 @@ export class UpdateCustomerDto {
 
     @IsOptional()
     @IsString()
+    first_name?: string;
+
+    @IsOptional()
+    @IsString()
+    last_name?: string;
+
+    @IsOptional()
+    @IsString()
     cnic_number?: string;
 
     @IsOptional()

@@ -2,7 +2,7 @@ import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Query, UseGuards } 
 import { LocationsService } from './locations.service.js';
 import { FindLocationsDto, StarLocationDto, UpdateLocationDto } from './location.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
-import { AdminGuard } from '../strategies/admin.guard.js';
+import { Can } from '../access/permission.guard.js';
 
 @Controller('locations')
 @UseGuards(JwtAuthGuard)
@@ -14,7 +14,7 @@ export class LocationsController {
         return this.locationsService.findAll(query);
     }
 
-    @UseGuards(AdminGuard)
+    @Can('inventory.manage')
     @Patch(':id')
     update(@Param('id', ParseUUIDPipe) id: string, @Body() dto: UpdateLocationDto) {
         return this.locationsService.update(id, dto);

@@ -22,6 +22,11 @@ import { ApprovalsModule } from './approvals/approvals.module.js';
 import { PaymentsModule } from './payments/payments.module.js';
 import { ReportsModule } from './reports/reports.module.js';
 import { HelpModule } from './help/help.module.js';
+import { APP_INTERCEPTOR } from '@nestjs/core';
+import { TenantsModule } from './tenants/tenants.module.js';
+import { AccessModule } from './access/access.module.js';
+import { TenantInterceptor } from './tenants/tenant.interceptor.js';
+import { TenantSubscriber } from './tenants/tenant.subscriber.js';
 
 @Module({
   imports: [
@@ -33,7 +38,10 @@ import { HelpModule } from './help/help.module.js';
       url: process.env.DATABASE_URL,
       autoLoadEntities: true,
       synchronize: false,
+      subscribers: [TenantSubscriber],
     }),
+    TenantsModule,
+    AccessModule,
     AuthModule,
     LeadsModule,
     InterestsModule,
@@ -55,6 +63,6 @@ import { HelpModule } from './help/help.module.js';
     HelpModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService, { provide: APP_INTERCEPTOR, useClass: TenantInterceptor }],
 })
 export class AppModule {}

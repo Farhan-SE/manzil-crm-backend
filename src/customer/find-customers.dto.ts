@@ -7,7 +7,7 @@ export class StarCustomerDto {
     is_starred: boolean;
 }
 
-export const CUSTOMER_SEARCH_FIELDS = ['cell', 'name', 'client_id', 'cnic'] as const;
+export const CUSTOMER_SEARCH_FIELDS = ['cell', 'name', 'client_id', 'cnic', 'project'] as const;
 export type CustomerSearchField = (typeof CUSTOMER_SEARCH_FIELDS)[number];
 
 export class FindCustomersDto {
@@ -33,6 +33,13 @@ export class FindCustomersDto {
     @IsOptional()
     @IsIn(['true', 'false'])
     starred?: string;
+
+    /** Clients with exactly this many leads. */
+    @IsOptional()
+    @Type(() => Number)
+    @IsInt()
+    @Min(0)
+    lead_count?: number;
 
     @IsOptional()
     @IsString()
