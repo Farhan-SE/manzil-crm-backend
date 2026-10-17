@@ -483,6 +483,42 @@ export class CustomerService {
         if (!source) throw new BadRequestException('source_id does not match an existing source');
     }
 
+    /**
+     * Who already holds a number: nobody, a client the requester can see (returned, so a lead can be
+     * opened on it), or another agent's client, which is described no further.
+     */
+    async checkPhone(phone: string, requester: Requester) {
+        const digits = normalizePhone(phone);
+        if (digits.length < 7) throw new BadRequestException('Enter a valid phone number');
+
+        const customer = await this.customerRepository
+            .createQueryBuilder('customer')
+            .leftJoinAndSelect('customer.assigned_to', 'assigned_to')
+            .leftJoinAndSelect('customer.created_by', 'created_by')
+            .leftJoinAndSelect('customer.source', 'source')
+            .leftJoinAndSelect('customer.project', 'project')
+            .where(`${NORMALIZED_PHONE} = :digits`, { digits })
+            .andWhere('customer.tenant_id = :tenantId', { tenantId: tenantId() })
+            .getOne();
+        if (!customer) return { status: 'available' as const };
+
+        const owners = can(requester, 'customers.view')
+            ? await scopedUserIds(this.customerRepository.manager, requester, 'customers.view')
+            : [];
+        const visible = owners === null
+            || [customer.assigned_to?.id, customer.created_by?.id].some((id) => id != null && owners.includes(id));
+        if (!visible) return { status: 'taken' as const, message: DUPLICATE_PHONE };
+
+        const addedBy = customer.created_by
+            ? { id: customer.created_by.id, first_name: customer.created_by.first_name, last_name: customer.created_by.last_name }
+            : null;
+        return {
+            status: 'existing' as const,
+            customer: this.serialize(customer, await this.countLeads([customer])),
+            added_by: addedBy,
+        };
+    }
+
     /** One client per phone number. The message gives nothing away about the existing client. */
     private async assertPhoneIsFree(phone: string, excludeId?: string) {
         const digits = normalizePhone(phone);
