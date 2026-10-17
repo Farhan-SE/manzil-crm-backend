@@ -3,6 +3,7 @@ import {
     Body,
     Controller,
     Delete,
+    ForbiddenException,
     Get,
     Param,
     ParseUUIDPipe,
@@ -18,9 +19,10 @@ import type { UploadedCsv } from '../common/csv.js';
 import { CustomerService } from './customer.service.js';
 import { CreateCustomerDto } from './create-customer.dto.js';
 import { UpdateCustomerDto } from './update-customer.dto.js';
-import { FindCustomersDto, StarCustomerDto } from './find-customers.dto.js';
+import { FindCustomersDto, PhoneCheckDto, StarCustomerDto } from './find-customers.dto.js';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
 import { Can } from '../access/permission.guard.js';
+import { can } from '../access/access.js';
 import { UserSession } from '../strategies/user.decorator.js';
 import { BulkAssignDto } from '../common/bulk-assign.dto.js';
 
@@ -54,6 +56,15 @@ export class CustomerController {
     @Get()
     findAll(@Query() query: FindCustomersDto, @UserSession() user: any) {
         return this.customerService.findAll(query, user);
+    }
+
+    // Asked before the client or lead form opens, so it is open to anyone who can add either.
+    @Get('phone-check')
+    checkPhone(@Query() query: PhoneCheckDto, @UserSession() user: any) {
+        if (!can(user, 'customers.create') && !can(user, 'leads.create')) {
+            throw new ForbiddenException("Your role doesn't allow this");
+        }
+        return this.customerService.checkPhone(query.phone, user);
     }
 
     @Get(':id')
