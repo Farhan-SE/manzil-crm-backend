@@ -2,7 +2,8 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { CustomerImport } from './customer-import.entity.js';
-import { enqueueImport, presignUpload, queueConfigured, readUpload, uploadExists } from './import-aws.js';
+import { enqueueImport, presignUpload, queueConfigured } from './import-aws.js';
+import { readUpload, uploadExists } from './import-files.js';
 import { processImport } from './process-import.js';
 import { tenantId } from '../tenants/tenant-context.js';
 

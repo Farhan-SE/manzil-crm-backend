@@ -1,7 +1,8 @@
+import 'reflect-metadata';
 import { DataSource } from 'typeorm';
 import AppDataSource from '../data-source.js';
 import { processImport } from '../customer/process-import.js';
-import { readUpload } from '../customer/import-aws.js';
+import { readUpload } from '../customer/import-files.js';
 
 type SqsEvent = { Records: { body: string }[] };
 
