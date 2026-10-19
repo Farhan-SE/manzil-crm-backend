@@ -16,16 +16,11 @@ import { needsPayment } from '../leads/stage-change.js';
 import { CreateCustomerDto } from './create-customer.dto.js';
 import { UpdateCustomerDto } from './update-customer.dto.js';
 import { FindCustomersDto } from './find-customers.dto.js';
-import { cell, parseSpreadsheet, type ImportResult } from '../common/csv.js';
-import { closestName, normalizeName } from '../common/fuzzy-name.js';
+import { parseSpreadsheet, type ImportResult } from '../common/csv.js';
+import { assignProjects, duplicatePhone, normalizePhone, readClientRows } from './customer-import.js';
 import { tenantId } from '../tenants/tenant-context.js';
 import { assertReaches, can, scopedUserIds, type Requester } from '../access/access.js';
 
-
-/** A phone number reduced to its national digits, so 0300-1234567 and +92 300 1234567 compare equal. */
-export function normalizePhone(phone: string) {
-    return phone.replace(/\D/g, '').replace(/^(0092|92|0)/, '');
-}
 
 const DUPLICATE_PHONE = 'This phone number is already assigned to an agent';
 
@@ -44,25 +39,8 @@ const PROJECT_NAMED = (alias: string) =>
 
 type LeadSummary = Map<string, { count: number; latestLeadId: string; project: { id: string; name: string } | null }>;
 
-const RELATION_TYPES = ['buyer', 'seller', 'investor'];
-
-
-
-/** Accepted CSV header spellings, lowercased. Order within a list does not matter. */
-const CUSTOMER_ALIASES = {
-    customer_name: ['name', 'full name', 'customer', 'customer name', 'client name'],
-    cnic_number: ['cnic', 'nic', 'id', 'id card'],
-    contact_number: ['phone', 'number', 'mobile', 'contact', 'phone number', 'whatsapp'],
-    alternate_contact_number: ['alt phone', 'alternate phone', 'phone 2', 'landline'],
-    email: ['email', 'email address'],
-    address: ['address', 'street'],
-    city: ['city'],
-    relation_type: ['type', 'customer type'],
-    customer_since: ['since', 'customer since', 'date'],
-    source: ['source', 'lead source'],
-    notes: ['notes', 'remarks', 'comments'],
-    project: ['project', 'project name'],
-};
+// Rows per INSERT. 1000 clients × 14 values stays well under Postgres's 65535 parameter limit.
+const IMPORT_CHUNK = 1000;
 
 @Injectable()
 export class CustomerService {
@@ -292,92 +270,78 @@ export class CustomerService {
      */
     async importCsv(buffer: Buffer, createdById: number): Promise<ImportResult> {
         const rows = await parseSpreadsheet(buffer);
-        const sources = await this.sourceRepository.find({ where: { tenant_id: tenantId() } });
+        const tenant = tenantId();
+        // Round trips dominate an import, so every query here covers the whole file rather than one row.
+        const [sources, existingProjects] = await Promise.all([
+            this.sourceRepository.find({ where: { tenant_id: tenant } }),
+            this.projectRepository.find({ where: { tenant_id: tenant }, select: { id: true, project_name: true } }),
+        ]);
         const sourceIdByName = new Map(sources.map((s) => [s.name.toLowerCase(), s.id]));
-        // Grows as the import creates projects, so later rows spelling the same name differently join them.
-        const projects = (
-            await this.projectRepository.find({ where: { tenant_id: tenantId() }, select: { id: true, project_name: true } })
-        ).map((project) => ({ id: project.id, name: project.project_name }));
 
-        const result: ImportResult = {
+        const { drafts, errors } = readClientRows(rows, sourceIdByName);
+        const taken = await this.takenPhones(drafts.map((draft) => draft.phoneKey));
+        const fresh = drafts.filter((draft) => {
+            if (taken.has(draft.phoneKey)) errors.push(duplicatePhone(draft));
+            return !taken.has(draft.phoneKey);
+        });
+        const { created, matched } = assignProjects(
+            fresh,
+            existingProjects.map((project) => ({ id: project.id, name: project.project_name })),
+        );
+
+        let added = 0;
+        await this.customerRepository.manager.transaction(async (manager) => {
+            if (created.length) {
+                const { identifiers } = await manager.insert(
+                    PartnerProject,
+                    created.map((project) => ({ project_name: project.name, tenant_id: tenant, created_by: { id: createdById } as User })),
+                );
+                created.forEach((project, i) => (project.id = identifiers[i].id));
+            }
+
+            for (let start = 0; start < fresh.length; start += IMPORT_CHUNK) {
+                const chunk = fresh.slice(start, start + IMPORT_CHUNK);
+                // Skipping conflicts covers a number someone else added since takenPhones ran.
+                const { raw } = await manager
+                    .createQueryBuilder()
+                    .insert()
+                    .into(Customers)
+                    .values(chunk.map((draft) => ({
+                        ...draft.values,
+                        project_id: draft.project?.id ?? null,
+                        tenant_id: tenant,
+                        created_by: { id: createdById } as User,
+                    })))
+                    .orIgnore()
+                    .returning('contact_number')
+                    .updateEntity(false)
+                    .execute();
+                const inserted = new Set((raw as { contact_number: string }[]).map((r) => normalizePhone(r.contact_number)));
+                for (const draft of chunk) if (!inserted.has(draft.phoneKey)) errors.push(duplicatePhone(draft));
+                added += inserted.size;
+            }
+        });
+
+        return {
             total: rows.length,
-            added: 0,
-            skipped: 0,
-            errors: [],
-            projects_created: [],
-            projects_matched: [],
+            added,
+            skipped: errors.length,
+            errors: errors.sort((a, b) => a.row - b.row),
+            projects_created: created.map((project) => project.name),
+            projects_matched: matched,
         };
+    }
 
-        for (const [index, row] of rows.entries()) {
-            // +2 so the number matches the spreadsheet line the user sees (1 = header).
-            const rowNumber = index + 2;
-            const name = cell(row, CUSTOMER_ALIASES.customer_name);
-            const phone = cell(row, CUSTOMER_ALIASES.contact_number);
-
-            if (!name || !phone) {
-                result.skipped += 1;
-                result.errors.push({ row: rowNumber, reason: 'Missing name or phone' });
-                continue;
-            }
-
-            const duplicate = await this.customerRepository
-                .createQueryBuilder('customer')
-                .where(`${NORMALIZED_PHONE} = :digits`, { digits: normalizePhone(phone) })
-                .andWhere('customer.tenant_id = :tenantId', { tenantId: tenantId() })
-                .getOne();
-            if (duplicate) {
-                result.skipped += 1;
-                result.errors.push({ row: rowNumber, reason: `Duplicate phone ${phone}` });
-                continue;
-            }
-
-            const rawType = cell(row, CUSTOMER_ALIASES.relation_type).toLowerCase();
-            const sourceName = cell(row, CUSTOMER_ALIASES.source).toLowerCase();
-            const since = cell(row, CUSTOMER_ALIASES.customer_since);
-
-            const projectName = cell(row, CUSTOMER_ALIASES.project).replace(/\s+/g, ' ');
-            let projectId: string | null = null;
-            if (projectName) {
-                const existing = closestName(projectName, projects);
-                if (existing) {
-                    projectId = existing.id;
-                    // A name that only matched by being close is reported once, so a wrong guess can be spotted.
-                    const spelledDifferently = normalizeName(existing.name) !== normalizeName(projectName);
-                    if (spelledDifferently && !result.projects_matched!.some((m) => m.from === projectName)) {
-                        result.projects_matched!.push({ from: projectName, to: existing.name });
-                    }
-                } else {
-                    const created = await this.projectRepository.save(
-                        this.projectRepository.create({ project_name: projectName, created_by: { id: createdById } as User }),
-                    );
-                    projectId = created.id;
-                    projects.push({ id: created.id, name: projectName });
-                    result.projects_created!.push(projectName);
-                }
-            }
-
-            const customer = this.customerRepository.create({
-                customer_name: name,
-                cnic_number: cell(row, CUSTOMER_ALIASES.cnic_number) || null,
-                contact_number: phone,
-                project_id: projectId,
-                alternate_contact_number: cell(row, CUSTOMER_ALIASES.alternate_contact_number) || null,
-                email: cell(row, CUSTOMER_ALIASES.email) || null,
-                address: cell(row, CUSTOMER_ALIASES.address) || null,
-                city: cell(row, CUSTOMER_ALIASES.city) || null,
-                relation_type: RELATION_TYPES.includes(rawType) ? rawType : 'buyer',
-                source_id: sourceIdByName.get(sourceName) ?? null,
-                customer_since: since && !Number.isNaN(Date.parse(since)) ? new Date(since) : null,
-                notes: cell(row, CUSTOMER_ALIASES.notes) || null,
-                assigned_to: null,
-                created_by: { id: createdById } as User,
-            });
-
-            await this.customerRepository.save(customer);
-            result.added += 1;
-        }
-
-        return result;
+    /** The phones among `phoneKeys` that already belong to a client of this company. */
+    private async takenPhones(phoneKeys: string[]) {
+        if (!phoneKeys.length) return new Set<string>();
+        const rows: { phone: string }[] = await this.customerRepository
+            .createQueryBuilder('customer')
+            .select(NORMALIZED_PHONE, 'phone')
+            .where('customer.tenant_id = :tenantId', { tenantId: tenantId() })
+            .andWhere(`${NORMALIZED_PHONE} = ANY(:phoneKeys)`, { phoneKeys })
+            .getRawMany();
+        return new Set(rows.map((row) => row.phone));
     }
 
     /** Narrows any where clause (or list of OR'd clauses) to the clients the requester may see. */
