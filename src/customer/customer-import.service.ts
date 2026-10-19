@@ -63,7 +63,8 @@ export class CustomerImportService {
             where: { tenant_id: tenantId(), status: ACTIVE },
             order: { created_at: 'DESC' },
         });
-        return job ? this.serialize(job) : null;
+        // Wrapped because Nest sends a bare null as an empty body, which isn't JSON.
+        return { job: job ? this.serialize(job) : null };
     }
 
     private serialize(job: CustomerImport) {
