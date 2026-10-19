@@ -16,16 +16,14 @@ import { needsPayment } from '../leads/stage-change.js';
 import { CreateCustomerDto } from './create-customer.dto.js';
 import { UpdateCustomerDto } from './update-customer.dto.js';
 import { FindCustomersDto } from './find-customers.dto.js';
-import { parseSpreadsheet, type ImportResult } from '../common/csv.js';
-import { assignProjects, duplicatePhone, normalizePhone, readClientRows } from './customer-import.js';
+import type { ImportResult } from '../common/csv.js';
+import { NORMALIZED_PHONE, normalizePhone } from './customer-import.js';
+import { importClients } from './import-clients.js';
 import { tenantId } from '../tenants/tenant-context.js';
 import { assertReaches, can, scopedUserIds, type Requester } from '../access/access.js';
 
 
 const DUPLICATE_PHONE = 'This phone number is already assigned to an agent';
-
-// The same rule in SQL; the unique index on customers uses this exact expression.
-const NORMALIZED_PHONE = "regexp_replace(regexp_replace(customer.contact_number, '[^0-9]', '', 'g'), '^(0092|92|0)', '')";
 
 /** Whether the client was added for the project, or has a lead on it. `alias` is the customer's id column. */
 const IN_PROJECT = (alias: string) =>
@@ -38,9 +36,6 @@ const PROJECT_NAMED = (alias: string) =>
     ` OR EXISTS (SELECT 1 FROM "lead" l JOIN "partner_project" p ON p.id = l.project_id WHERE l.customer_id = ${alias} AND p.project_name ILIKE :projectName))`;
 
 type LeadSummary = Map<string, { count: number; latestLeadId: string; project: { id: string; name: string } | null }>;
-
-// Rows per INSERT. 1000 clients × 14 values stays well under Postgres's 65535 parameter limit.
-const IMPORT_CHUNK = 1000;
 
 @Injectable()
 export class CustomerService {
@@ -263,85 +258,9 @@ export class CustomerService {
         await this.customerRepository.remove(customer);
     }
 
-    /**
-     * Adds clients from a .csv or .xlsx. A row's project is matched to an existing one by name, allowing
-     * for case, punctuation and small misspellings; only a name nothing is close to becomes a new project.
-     * No lead is opened, unlike adding a client from the form.
-     */
-    async importCsv(buffer: Buffer, createdById: number): Promise<ImportResult> {
-        const rows = await parseSpreadsheet(buffer);
-        const tenant = tenantId();
-        // Round trips dominate an import, so every query here covers the whole file rather than one row.
-        const [sources, existingProjects] = await Promise.all([
-            this.sourceRepository.find({ where: { tenant_id: tenant } }),
-            this.projectRepository.find({ where: { tenant_id: tenant }, select: { id: true, project_name: true } }),
-        ]);
-        const sourceIdByName = new Map(sources.map((s) => [s.name.toLowerCase(), s.id]));
-
-        const { drafts, errors } = readClientRows(rows, sourceIdByName);
-        const taken = await this.takenPhones(drafts.map((draft) => draft.phoneKey));
-        const fresh = drafts.filter((draft) => {
-            if (taken.has(draft.phoneKey)) errors.push(duplicatePhone(draft));
-            return !taken.has(draft.phoneKey);
-        });
-        const { created, matched } = assignProjects(
-            fresh,
-            existingProjects.map((project) => ({ id: project.id, name: project.project_name })),
-        );
-
-        let added = 0;
-        await this.customerRepository.manager.transaction(async (manager) => {
-            if (created.length) {
-                const { identifiers } = await manager.insert(
-                    PartnerProject,
-                    created.map((project) => ({ project_name: project.name, tenant_id: tenant, created_by: { id: createdById } as User })),
-                );
-                created.forEach((project, i) => (project.id = identifiers[i].id));
-            }
-
-            for (let start = 0; start < fresh.length; start += IMPORT_CHUNK) {
-                const chunk = fresh.slice(start, start + IMPORT_CHUNK);
-                // Skipping conflicts covers a number someone else added since takenPhones ran.
-                const { raw } = await manager
-                    .createQueryBuilder()
-                    .insert()
-                    .into(Customers)
-                    .values(chunk.map((draft) => ({
-                        ...draft.values,
-                        project_id: draft.project?.id ?? null,
-                        tenant_id: tenant,
-                        created_by: { id: createdById } as User,
-                    })))
-                    .orIgnore()
-                    .returning('contact_number')
-                    .updateEntity(false)
-                    .execute();
-                const inserted = new Set((raw as { contact_number: string }[]).map((r) => normalizePhone(r.contact_number)));
-                for (const draft of chunk) if (!inserted.has(draft.phoneKey)) errors.push(duplicatePhone(draft));
-                added += inserted.size;
-            }
-        });
-
-        return {
-            total: rows.length,
-            added,
-            skipped: errors.length,
-            errors: errors.sort((a, b) => a.row - b.row),
-            projects_created: created.map((project) => project.name),
-            projects_matched: matched,
-        };
-    }
-
-    /** The phones among `phoneKeys` that already belong to a client of this company. */
-    private async takenPhones(phoneKeys: string[]) {
-        if (!phoneKeys.length) return new Set<string>();
-        const rows: { phone: string }[] = await this.customerRepository
-            .createQueryBuilder('customer')
-            .select(NORMALIZED_PHONE, 'phone')
-            .where('customer.tenant_id = :tenantId', { tenantId: tenantId() })
-            .andWhere(`${NORMALIZED_PHONE} = ANY(:phoneKeys)`, { phoneKeys })
-            .getRawMany();
-        return new Set(rows.map((row) => row.phone));
+    /** Imports a spreadsheet within the request. Large files go through CustomerImportService instead. */
+    importCsv(buffer: Buffer, createdById: number): Promise<ImportResult> {
+        return importClients(this.customerRepository.manager, buffer, { tenantId: tenantId(), createdById });
     }
 
     /** Narrows any where clause (or list of OR'd clauses) to the clients the requester may see. */

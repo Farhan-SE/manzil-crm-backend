@@ -6,7 +6,10 @@ export function normalizePhone(phone: string) {
     return phone.replace(/\D/g, '').replace(/^(0092|92|0)/, '');
 }
 
-const RELATION_TYPES = ['buyer', 'seller', 'investor'];
+// The same rule in SQL, for a query aliasing customers as "customer"; the unique index uses this expression.
+export const NORMALIZED_PHONE = "regexp_replace(regexp_replace(customer.contact_number, '[^0-9]', '', 'g'), '^(0092|92|0)', '')";
+
+const RELATION_TYPES =['buyer', 'seller', 'investor'];
 
 /** Accepted CSV header spellings, lowercased. Order within a list does not matter. */
 const CUSTOMER_ALIASES = {
