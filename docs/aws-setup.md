@@ -208,7 +208,6 @@ Before going live, in the production account:
 - [ ] RDS: **public access off**, sized for production, Multi-AZ if downtime matters, deletion protection on, longer backups.
 - [ ] Move the API to ECS Fargate behind an ALB with HTTPS (ACM). Give it a **task role**
       (S3 put/get/list on `imports/*`, SQS send) instead of access keys, and keep secrets in Secrets Manager or SSM.
-- [ ] The `Dockerfile` doesn't copy `certs/` into the image yet. Add it, since `DATABASE_URL` points at `./certs/rds-global-bundle.pem`.
 - [ ] Replace the Lambda's `PowerUserRole` with a least-privilege role: `AWSLambdaVPCAccessExecutionRole`,
       `s3:GetObject` on the bucket's `imports/*`, and `sqs:ReceiveMessage`, `sqs:DeleteMessage`,
       `sqs:GetQueueAttributes` on the queue.
