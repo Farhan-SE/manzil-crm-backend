@@ -8,10 +8,13 @@ in the Lambda's environment variables.
 
 | Piece | Now | Plan |
 |---|---|---|
-| Frontend | Vercel | stays on Vercel |
-| API | Railway (`Dockerfile`), or locally for testing | AWS ECS Fargate + Application Load Balancer |
+| Frontend | Vercel. The AWS test setup is served by `https://manzil-crm-frontend-sooty.vercel.app`, deployed from the fork `sajawal-jutt/manzil-crm-frontend` | stays on Vercel |
+| API | **EC2 `manzil-api` behind CloudFront** (test): `https://d2h04c5omwrhgc.cloudfront.net` | AWS ECS Fargate + Application Load Balancer |
 | Database | **AWS RDS** test instance (Neon is no longer used; its data was dummy and was not migrated) | RDS in the production account |
 | Client imports | **S3 + SQS + Lambda** (test) | same, in the production account |
+
+Railway can't reach the test database: `manzil-rds-sg` only lets in the developer's IP, the Lambda and
+the EC2 API, and Railway has no fixed outbound IP. That is why the API moved to EC2.
 
 ### Accounts and region
 
@@ -25,16 +28,17 @@ in the Lambda's environment variables.
 
 ```
 Browser (Vercel / localhost:3000)
-   │  API calls                         │  file upload (presigned POST)
+   │  API calls (HTTPS)                 │  file upload (presigned POST)
    ▼                                    ▼
- API (local / Railway) ──put job──► SQS manzil-customer-imports ──trigger──► Lambda manzil-customer-import
-   │                                    │ after 3 failures                       │      (in the VPC)
-   │                                    ▼                                        │
-   │                          SQS manzil-customer-imports-dlq        S3 gateway endpoint
-   │                                                                             │
+ CloudFront d2h04c5omwrhgc         S3 manzil-crm-imports-342572234891
+   │  HTTP :3001, CloudFront IPs only               ▲ reads the file
+   ▼                                                │
+ EC2 manzil-api (Docker) ──put job──► SQS manzil-customer-imports ──trigger──► Lambda manzil-customer-import
+   │                                    │ after 3 failures                       │   (in the VPC, S3 via
+   │                                    ▼                                        │    the gateway endpoint)
+   │                          SQS manzil-customer-imports-dlq                    │
    ▼                                                                             ▼
  RDS manzil-crm-db  ◄─────────────── security group manzil-rds-sg ───────────────┘
-                                                        S3 manzil-crm-imports-342572234891
 ```
 
 ## RDS PostgreSQL
@@ -59,6 +63,11 @@ Browser (Vercel / localhost:3000)
 |---|---|
 | The developer's IP `/32` | Local API, migrations, scripts. **If connections start timing out, the ISP changed the IP**: edit the rule and choose *My IP*. |
 | `manzil-lambda-sg` (`sg-0d2a7d56776756ef5`) | The import Lambda |
+| `manzil-api-sg` (`sg-0769cbb073c816f7c`) | The EC2 API |
+
+Because public access is on, RDS has its own Elastic IP, `3.106.20.148`, on a network interface in
+`manzil-rds-sg`. It shows up under EC2 → Elastic IPs with no instance. **Never associate it with
+anything else**, or the database loses its public address.
 
 Connecting uses verified TLS with the Amazon CA bundle committed in `certs/`:
 
@@ -70,8 +79,10 @@ The database was created empty: all migrations were applied with `npm run migrat
 platform admin was created with `npm run super-admin:create`. Migration `AddTenants` creates an
 empty company named "Manzil" by default.
 
-**Save credits:** when nobody is testing, use RDS → Actions → **Stop temporarily**. RDS starts
-itself again after 7 days.
+**Save credits:** when nobody is testing, use RDS → Actions → **Stop temporarily** and stop the
+EC2 server too (Instance state → Stop). RDS starts itself again after 7 days. Start RDS first when
+resuming. If the server comes up before the database, Docker keeps restarting the API container
+until its migrations can connect.
 
 ## S3: uploaded spreadsheets
 
@@ -87,7 +98,7 @@ CORS, so the browser can post the file directly:
 ```json
 [
   {
-    "AllowedOrigins": ["http://localhost:3000"],
+    "AllowedOrigins": ["http://localhost:3000", "https://manzil-crm-frontend-sooty.vercel.app"],
     "AllowedMethods": ["POST"],
     "AllowedHeaders": ["*"],
     "MaxAgeSeconds": 3000
@@ -95,7 +106,7 @@ CORS, so the browser can post the file directly:
 ]
 ```
 
-Add the Vercel domain(s) to `AllowedOrigins` before the deployed frontend can upload.
+Every frontend address that uploads files must be in `AllowedOrigins`.
 
 ## SQS
 
@@ -136,6 +147,61 @@ Lambda in a VPC has no internet. It doesn't need any:
 `manzil-lambda-sg`: no inbound rules, default outbound (all).
 
 Logs: Lambda → Monitor → View CloudWatch logs.
+
+## EC2: the API server
+
+| Setting | Value |
+|---|---|
+| Name / ID | `manzil-api` / `i-0426a611b88514e75` |
+| AMI | Amazon Linux 2023, **arm64** |
+| Instance | `t4g.small` (2 vCPU, 2 GiB) with **Standard** credits, so a busy CPU is throttled rather than billed |
+| Storage | 20 GiB gp3. User data adds a 2 GiB swap file so the Docker build has room. |
+| Network | default VPC, `ap-southeast-2b`, private IP `172.31.36.126` |
+| Elastic IP | `15.134.27.141` (named `manzil-api`), so the address CloudFront points at survives a stop/start |
+| Security group | `manzil-api-sg`: one inbound rule, TCP **3001** from the prefix list `com.amazonaws.global.cloudfront.origin-facing` (`pl-b8a742d1`). Choose that list, not the `ipv6` one. There is no SSH rule. |
+| Key pair | none |
+| IAM role | `manzil-api-ec2-role`: `AmazonSSMManagedInstanceCore` (for Session Manager) plus the inline policy `manzil-api-imports` (the S3 and SQS statements of the IAM user below). No access keys on the server. |
+| Metadata | IMDSv2 required, hop limit **2**, so the container can reach the role's credentials |
+| Termination protection | on |
+
+**Getting a shell:** EC2 → Instances → `manzil-api` → Connect → **SSM Session Manager** (not EC2
+Instance Connect, which needs port 22). Then `sudo su - ec2-user`.
+
+The API runs as the Docker container `manzil-api`, built from this repo's `Dockerfile` in
+`/home/ec2-user/manzil-crm-backend`. It restarts with the server (`--restart unless-stopped`) and runs
+pending migrations each time it starts. Its settings are in that folder's `.env` (mode 600): the same
+variables as the local `.env` without the AWS keys, plus `PORT=3001`, `FRONTEND_URL` and
+`CORS_ORIGINS` set to the Vercel address. Don't put quotes around values, because Docker's
+`--env-file` keeps them as part of the value.
+
+**Deploying a change:** push it to the branch the server has checked out, then on the server:
+
+```bash
+~/manzil-crm-backend/scripts/deploy-ec2.sh
+```
+
+It pulls, rebuilds the image, replaces the container and prints the last log lines. After editing
+`.env`, run it too: `docker restart` does not re-read `.env`. Logs: `docker logs --tail 50 manzil-api`.
+
+## CloudFront: HTTPS in front of the API
+
+The frontend is served over HTTPS, so the API has to be too, and there is no custom domain yet.
+CloudFront provides `https://d2h04c5omwrhgc.cloudfront.net` with its own certificate.
+
+| Setting | Value |
+|---|---|
+| Distribution | `manzil-api` (`E11JH91BR80NUN`), pay-as-you-go, no WAF |
+| Origin | type *Other*, `ec2-15-134-27-141.ap-southeast-2.compute.amazonaws.com` (CloudFront needs a name, not an IP), **HTTP only**, port **3001**, IPv4 only, no Origin Shield |
+| Viewer protocol | Redirect HTTP to HTTPS |
+| Methods | GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE |
+| Cache policy | **CachingDisabled**. The API answers per user, so nothing may be cached. |
+| Origin request policy | **AllViewerExceptHostHeader** (forwards `Authorization`, query strings and the viewer's IP) |
+
+CloudFront appends the visitor's IP to `X-Forwarded-For`, and the API trusts one proxy hop, so the
+login rate limits see the real visitor. The "Billing: Missing permissions" warning on the
+distribution page only means this user can't view CloudFront billing; it can be ignored.
+
+The frontend's `NEXT_PUBLIC_API_URL` is `https://d2h04c5omwrhgc.cloudfront.net` (no trailing slash).
 
 ## IAM user for the local API
 
@@ -206,9 +272,10 @@ Before going live, in the production account:
 
 - [ ] Choose the region and recreate RDS, S3, SQS, the endpoint, the security groups and the Lambda as above.
 - [ ] RDS: **public access off**, sized for production, Multi-AZ if downtime matters, deletion protection on, longer backups.
-- [ ] Move the API to ECS Fargate behind an ALB with HTTPS (ACM). Give it a **task role**
-      (S3 put/get/list on `imports/*`, SQS send) instead of access keys, and keep secrets in Secrets Manager or SSM.
-- [ ] The `Dockerfile` doesn't copy `certs/` into the image yet. Add it, since `DATABASE_URL` points at `./certs/rds-global-bundle.pem`.
+- [ ] Move the API from the test EC2 server to ECS Fargate behind an ALB with HTTPS (ACM) on a real
+      domain. Give it a **task role** with the same permissions as `manzil-api-ec2-role`, and keep
+      secrets in Secrets Manager or SSM instead of a `.env` file.
+- [ ] Consider AWS WAF on the production entry point (about $14/month for the managed rules).
 - [ ] Replace the Lambda's `PowerUserRole` with a least-privilege role: `AWSLambdaVPCAccessExecutionRole`,
       `s3:GetObject` on the bucket's `imports/*`, and `sqs:ReceiveMessage`, `sqs:DeleteMessage`,
       `sqs:GetQueueAttributes` on the queue.

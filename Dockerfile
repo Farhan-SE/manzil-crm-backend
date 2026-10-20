@@ -19,6 +19,8 @@ COPY package*.json ./
 RUN npm install -g npm@11.12.1 && npm ci --omit=dev
 
 COPY --from=builder /app/dist ./dist
+# DATABASE_URL's sslrootcert points at ./certs/rds-global-bundle.pem.
+COPY certs ./certs
 
 # Railway injects PORT; this is only the documented default.
 EXPOSE 3001

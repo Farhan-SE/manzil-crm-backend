@@ -72,11 +72,13 @@ src/
   database/migrations/
   data-source.ts     TypeORM data source used by migrations, scripts and the Lambda
 certs/               Amazon RDS CA bundle for verified TLS
-scripts/             package-lambda.mjs
+scripts/             package-lambda.mjs, deploy-ec2.sh
 ```
 
 ## Deployment
 
-Today the API runs on Railway from the `Dockerfile` (it runs pending migrations on start). The
-plan is to move it to AWS ECS Fargate next to the database; see the production checklist in
-[docs/aws-setup.md](docs/aws-setup.md#production-checklist).
+The API runs from the `Dockerfile`, which applies pending migrations on start. In the AWS test
+setup it runs on an EC2 server behind CloudFront, next to the RDS database; deploy a change with
+`scripts/deploy-ec2.sh` on that server (see [docs/aws-setup.md](docs/aws-setup.md#ec2-the-api-server)).
+Railway can't reach the RDS database. The plan for production is ECS Fargate; see the
+[production checklist](docs/aws-setup.md#production-checklist).

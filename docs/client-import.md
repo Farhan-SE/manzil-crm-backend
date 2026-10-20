@@ -55,6 +55,8 @@ Rules:
   "Phase 2", or "Tower A" and "Tower B", stay apart. A name close to nothing becomes a new project,
   and later rows spelling it differently join that new project. The result lists the projects
   created and the misspellings that were matched.
+- **The country comes from the phone's calling code** (`+971 …` → UAE, `00966 …` → Saudi Arabia),
+  like the client form. A number without a code, such as `0300…`, is Pakistani.
 - **No leads are opened**, unlike adding a client from the form.
 - Fully blank rows are ignored. Row numbers in errors match the spreadsheet (row 1 is the header).
 

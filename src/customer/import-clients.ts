@@ -6,7 +6,7 @@ import { PartnerProject } from '../partner-projects/partner-project.entity.js';
 import type { User } from '../auth/user.entity.js';
 import { assignProjects, duplicatePhone, NORMALIZED_PHONE, normalizePhone, readClientRows } from './customer-import.js';
 
-// Rows per INSERT. 1000 clients × 14 values stays well under Postgres's 65535 parameter limit.
+// Rows per INSERT. 1000 clients × 15 values stays well under Postgres's 65535 parameter limit.
 const CHUNK = 1000;
 
 type ImportOptions = {

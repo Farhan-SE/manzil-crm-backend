@@ -32,6 +32,16 @@ describe('readClientRows', () => {
         expect(errors).toEqual([{ row: 3, reason: 'Duplicate phone +92 300 1234567' }]);
     });
 
+    it('takes the country from the phone code, defaulting to Pakistan', () => {
+        const { drafts } = read([
+            { name: 'Ali', phone: '0300-1234567' },
+            { name: 'Hina', phone: '+971 50 555 1206' },
+            { name: 'Sara', phone: '00966 55 123 4567' },
+            { name: 'John', phone: '+1 212 555 0100' },
+        ]);
+        expect(drafts.map((d) => d.values.country)).toEqual(['PK', 'AE', 'SA', 'US']);
+    });
+
     it('falls back to buyer for an unknown type and matches sources by name', () => {
         const { drafts } = read([{ name: 'Ali', phone: '03001234567', type: 'tenant', source: 'Facebook' }], new Map([['facebook', 's1']]));
         expect(drafts[0].values).toMatchObject({ relation_type: 'buyer', source_id: 's1' });

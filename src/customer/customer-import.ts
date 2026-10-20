@@ -1,5 +1,6 @@
 import { cell, type CsvRow, type ImportResult } from '../common/csv.js';
 import { closestName, normalizeName } from '../common/fuzzy-name.js';
+import { countryFromPhone } from '../common/country-code.js';
 
 /** A phone number reduced to its national digits, so 0300-1234567 and +92 300 1234567 compare equal. */
 export function normalizePhone(phone: string) {
@@ -41,6 +42,7 @@ export type ClientDraft = {
         customer_name: string;
         cnic_number: string | null;
         contact_number: string;
+        country: string;
         alternate_contact_number: string | null;
         email: string | null;
         address: string | null;
@@ -84,6 +86,7 @@ export function readClientRows(rows: CsvRow[], sourceIdByName: Map<string, strin
                 customer_name: name,
                 cnic_number: cell(row, CUSTOMER_ALIASES.cnic_number) || null,
                 contact_number: phone,
+                country: countryFromPhone(phone),
                 alternate_contact_number: cell(row, CUSTOMER_ALIASES.alternate_contact_number) || null,
                 email: cell(row, CUSTOMER_ALIASES.email) || null,
                 address: cell(row, CUSTOMER_ALIASES.address) || null,
