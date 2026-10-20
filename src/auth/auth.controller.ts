@@ -6,6 +6,7 @@ import { ChangePasswordDto } from "./change-password.dto.js";
 import { BlockUserDto } from "./block-user.dto.js";
 import { ChangeRoleDto } from "./change-role.dto.js";
 import { FindStaffDto, StarUserDto, SuspendUserDto, TransferLeadsDto, UpdateStaffProfileDto } from "./staff.dto.js";
+import { Throttle, ThrottlerGuard } from "@nestjs/throttler";
 import { JwtAuthGuard } from "../strategies/auth.guard.js";
 import { UserSession } from "../strategies/user.decorator.js";
 import { Can } from "../access/permission.guard.js";
@@ -17,6 +18,8 @@ export class AuthController {
     constructor(private readonly authService: AuthService) { }
 
     @Post('login')
+    @UseGuards(ThrottlerGuard)
+    @Throttle({ default: { limit: 20, ttl: 60_000 } })
     async login(@Body() dto: LoginDto) {
         return this.authService.login(dto);
     }
@@ -123,12 +126,16 @@ export class AuthController {
 
 
     @Post('forgot-password')
+    @UseGuards(ThrottlerGuard)
+    @Throttle({ default: { limit: 5, ttl: 15 * 60_000 } })
     async forgotPassword(@Body('email') email: string) {
         return this.authService.forgotPassword(email);
     }
 
 
     @Post('reset-password-token')
+    @UseGuards(ThrottlerGuard)
+    @Throttle({ default: { limit: 10, ttl: 15 * 60_000 } })
     async resetPasswordWithToken(
         @Body('token') token: string,
         @Body('new_password') newPassword: string,
