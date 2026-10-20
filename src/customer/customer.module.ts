@@ -8,14 +8,17 @@ import { Lead } from '../leads/lead.entity.js';
 import { PartnerProject } from '../partner-projects/partner-project.entity.js';
 import { CustomerService } from './customer.service.js';
 import { CustomerController } from './customer.controller.js';
+import { CustomerImport } from './customer-import.entity.js';
+import { CustomerImportService } from './customer-import.service.js';
+import { CustomerImportController } from './customer-import.controller.js';
 
 @Module({
     imports: [
-        TypeOrmModule.forFeature([Customers, User, Source, Lead, PartnerProject]),
+        TypeOrmModule.forFeature([Customers, User, Source, Lead, PartnerProject, CustomerImport]),
         PassportModule.register({ defaultStrategy: 'jwt' }),
     ],
-    providers: [CustomerService],
-    controllers: [CustomerController],
+    providers: [CustomerService, CustomerImportService],
+    controllers: [CustomerController, CustomerImportController],
     exports: [CustomerService],
 })
 export class CustomerModule { }

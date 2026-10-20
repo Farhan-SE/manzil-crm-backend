@@ -16,21 +16,14 @@ import { needsPayment } from '../leads/stage-change.js';
 import { CreateCustomerDto } from './create-customer.dto.js';
 import { UpdateCustomerDto } from './update-customer.dto.js';
 import { FindCustomersDto } from './find-customers.dto.js';
-import { cell, parseSpreadsheet, type ImportResult } from '../common/csv.js';
-import { closestName, normalizeName } from '../common/fuzzy-name.js';
+import type { ImportResult } from '../common/csv.js';
+import { NORMALIZED_PHONE, normalizePhone } from './customer-import.js';
+import { importClients } from './import-clients.js';
 import { tenantId } from '../tenants/tenant-context.js';
 import { assertReaches, can, scopedUserIds, type Requester } from '../access/access.js';
 
 
-/** A phone number reduced to its national digits, so 0300-1234567 and +92 300 1234567 compare equal. */
-export function normalizePhone(phone: string) {
-    return phone.replace(/\D/g, '').replace(/^(0092|92|0)/, '');
-}
-
 const DUPLICATE_PHONE = 'This phone number is already assigned to an agent';
-
-// The same rule in SQL; the unique index on customers uses this exact expression.
-const NORMALIZED_PHONE = "regexp_replace(regexp_replace(customer.contact_number, '[^0-9]', '', 'g'), '^(0092|92|0)', '')";
 
 /** Whether the client was added for the project, or has a lead on it. `alias` is the customer's id column. */
 const IN_PROJECT = (alias: string) =>
@@ -43,26 +36,6 @@ const PROJECT_NAMED = (alias: string) =>
     ` OR EXISTS (SELECT 1 FROM "lead" l JOIN "partner_project" p ON p.id = l.project_id WHERE l.customer_id = ${alias} AND p.project_name ILIKE :projectName))`;
 
 type LeadSummary = Map<string, { count: number; latestLeadId: string; project: { id: string; name: string } | null }>;
-
-const RELATION_TYPES = ['buyer', 'seller', 'investor'];
-
-
-
-/** Accepted CSV header spellings, lowercased. Order within a list does not matter. */
-const CUSTOMER_ALIASES = {
-    customer_name: ['name', 'full name', 'customer', 'customer name', 'client name'],
-    cnic_number: ['cnic', 'nic', 'id', 'id card'],
-    contact_number: ['phone', 'number', 'mobile', 'contact', 'phone number', 'whatsapp'],
-    alternate_contact_number: ['alt phone', 'alternate phone', 'phone 2', 'landline'],
-    email: ['email', 'email address'],
-    address: ['address', 'street'],
-    city: ['city'],
-    relation_type: ['type', 'customer type'],
-    customer_since: ['since', 'customer since', 'date'],
-    source: ['source', 'lead source'],
-    notes: ['notes', 'remarks', 'comments'],
-    project: ['project', 'project name'],
-};
 
 @Injectable()
 export class CustomerService {
@@ -285,99 +258,9 @@ export class CustomerService {
         await this.customerRepository.remove(customer);
     }
 
-    /**
-     * Adds clients from a .csv or .xlsx. A row's project is matched to an existing one by name, allowing
-     * for case, punctuation and small misspellings; only a name nothing is close to becomes a new project.
-     * No lead is opened, unlike adding a client from the form.
-     */
-    async importCsv(buffer: Buffer, createdById: number): Promise<ImportResult> {
-        const rows = await parseSpreadsheet(buffer);
-        const sources = await this.sourceRepository.find({ where: { tenant_id: tenantId() } });
-        const sourceIdByName = new Map(sources.map((s) => [s.name.toLowerCase(), s.id]));
-        // Grows as the import creates projects, so later rows spelling the same name differently join them.
-        const projects = (
-            await this.projectRepository.find({ where: { tenant_id: tenantId() }, select: { id: true, project_name: true } })
-        ).map((project) => ({ id: project.id, name: project.project_name }));
-
-        const result: ImportResult = {
-            total: rows.length,
-            added: 0,
-            skipped: 0,
-            errors: [],
-            projects_created: [],
-            projects_matched: [],
-        };
-
-        for (const [index, row] of rows.entries()) {
-            // +2 so the number matches the spreadsheet line the user sees (1 = header).
-            const rowNumber = index + 2;
-            const name = cell(row, CUSTOMER_ALIASES.customer_name);
-            const phone = cell(row, CUSTOMER_ALIASES.contact_number);
-
-            if (!name || !phone) {
-                result.skipped += 1;
-                result.errors.push({ row: rowNumber, reason: 'Missing name or phone' });
-                continue;
-            }
-
-            const duplicate = await this.customerRepository
-                .createQueryBuilder('customer')
-                .where(`${NORMALIZED_PHONE} = :digits`, { digits: normalizePhone(phone) })
-                .andWhere('customer.tenant_id = :tenantId', { tenantId: tenantId() })
-                .getOne();
-            if (duplicate) {
-                result.skipped += 1;
-                result.errors.push({ row: rowNumber, reason: `Duplicate phone ${phone}` });
-                continue;
-            }
-
-            const rawType = cell(row, CUSTOMER_ALIASES.relation_type).toLowerCase();
-            const sourceName = cell(row, CUSTOMER_ALIASES.source).toLowerCase();
-            const since = cell(row, CUSTOMER_ALIASES.customer_since);
-
-            const projectName = cell(row, CUSTOMER_ALIASES.project).replace(/\s+/g, ' ');
-            let projectId: string | null = null;
-            if (projectName) {
-                const existing = closestName(projectName, projects);
-                if (existing) {
-                    projectId = existing.id;
-                    // A name that only matched by being close is reported once, so a wrong guess can be spotted.
-                    const spelledDifferently = normalizeName(existing.name) !== normalizeName(projectName);
-                    if (spelledDifferently && !result.projects_matched!.some((m) => m.from === projectName)) {
-                        result.projects_matched!.push({ from: projectName, to: existing.name });
-                    }
-                } else {
-                    const created = await this.projectRepository.save(
-                        this.projectRepository.create({ project_name: projectName, created_by: { id: createdById } as User }),
-                    );
-                    projectId = created.id;
-                    projects.push({ id: created.id, name: projectName });
-                    result.projects_created!.push(projectName);
-                }
-            }
-
-            const customer = this.customerRepository.create({
-                customer_name: name,
-                cnic_number: cell(row, CUSTOMER_ALIASES.cnic_number) || null,
-                contact_number: phone,
-                project_id: projectId,
-                alternate_contact_number: cell(row, CUSTOMER_ALIASES.alternate_contact_number) || null,
-                email: cell(row, CUSTOMER_ALIASES.email) || null,
-                address: cell(row, CUSTOMER_ALIASES.address) || null,
-                city: cell(row, CUSTOMER_ALIASES.city) || null,
-                relation_type: RELATION_TYPES.includes(rawType) ? rawType : 'buyer',
-                source_id: sourceIdByName.get(sourceName) ?? null,
-                customer_since: since && !Number.isNaN(Date.parse(since)) ? new Date(since) : null,
-                notes: cell(row, CUSTOMER_ALIASES.notes) || null,
-                assigned_to: null,
-                created_by: { id: createdById } as User,
-            });
-
-            await this.customerRepository.save(customer);
-            result.added += 1;
-        }
-
-        return result;
+    /** Imports a spreadsheet within the request. Large files go through CustomerImportService instead. */
+    importCsv(buffer: Buffer, createdById: number): Promise<ImportResult> {
+        return importClients(this.customerRepository.manager, buffer, { tenantId: tenantId(), createdById });
     }
 
     /** Narrows any where clause (or list of OR'd clauses) to the clients the requester may see. */

@@ -1,114 +1,82 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Manzil CRM — Backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+NestJS API for Manzil CRM, a multi-company (multi-tenant) real-estate CRM. Every company's data
+lives in one PostgreSQL database, separated by `tenant_id`. The frontend is a separate Next.js app
+(`manzil-crm-frontend`, deployed on Vercel).
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+## Documentation
 
-## Description
+| Doc | What it covers |
+|---|---|
+| [docs/client-import.md](docs/client-import.md) | How client imports work: batching, the background job, S3 → SQS → Lambda, endpoints, performance numbers |
+| [docs/aws-setup.md](docs/aws-setup.md) | Every AWS resource the app uses, how each was set up in the console, and the production checklist |
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+## Requirements
 
-## Project setup
+- Node.js 22 or newer, npm 11
+- A PostgreSQL database (the test environment uses AWS RDS PostgreSQL 18; see [docs/aws-setup.md](docs/aws-setup.md))
+- For client imports: an S3 bucket, and optionally an SQS queue with the import Lambda
+
+## Setup
 
 ```bash
-$ npm install
+npm install
+# create .env with the variables below
+npm run migration:run  # builds, then applies every migration in src/database/migrations
+npm run super-admin:create -- you@example.com First Last   # prints a one-time temporary password
+npm run start:dev
 ```
 
-## Compile and run the project
+The API listens on `PORT` (default `3001`).
 
-```bash
-# development
-$ npm run start
+## Environment variables
 
-# watch mode
-$ npm run start:dev
+| Variable | Required | Purpose |
+|---|---|---|
+| `DATABASE_URL` | yes | Postgres connection string. For RDS use `?sslmode=verify-full&sslrootcert=./certs/rds-global-bundle.pem` — the Amazon CA bundle is committed in `certs/`. |
+| `JWT_SECRET` | yes | Signs login tokens |
+| `PORT` | no | Defaults to `3001` |
+| `CORS_ORIGINS` | no | Comma-separated extra origins allowed to call the API |
+| `FRONTEND_URL` | yes for email | Base URL used in password-reset emails |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` | yes for email | Outgoing mail |
+| `AWS_REGION` | for imports | `ap-southeast-2` in the test environment |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | locally, for imports | Keys of the `manzil-backend-local` IAM user. Not used on AWS, where the task role provides credentials. |
+| `IMPORT_BUCKET` | for imports | S3 bucket that receives uploaded spreadsheets |
+| `IMPORT_QUEUE_URL` | no | SQS queue for imports. **When unset, the API runs imports in its own process** — handy for local development without the Lambda. When set, imports are queued and the Lambda runs them. |
 
-# production mode
-$ npm run start:prod
+Never commit `.env`.
+
+## Scripts
+
+| Command | What it does |
+|---|---|
+| `npm run start:dev` | API in watch mode |
+| `npm run build` | Compile to `dist/` |
+| `npm test` | Unit tests (vitest) |
+| `npm run lint` | oxlint |
+| `npm run migration:run` | Build, then apply pending migrations to `DATABASE_URL` |
+| `npm run migration:revert` | Undo the last migration |
+| `npm run super-admin:create -- <email> <first> <last>` | Create the first platform admin (there is deliberately no endpoint for this) |
+| `npm run lambda:package` | Build `lambda.zip` for the client-import Lambda (see [docs/client-import.md](docs/client-import.md#deploying-the-lambda)) |
+
+## Project layout
+
 ```
-
-## Run tests
-
-```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+src/
+  access/            roles, permissions and own/team/all scopes
+  auth/              login, users, password reset
+  tenants/           companies; tenant-context.ts scopes every request to one company
+  customer/          clients, including the import (see docs/client-import.md)
+  leads/ units/ partner-projects/ ...   the other CRM modules
+  lambda/            AWS Lambda entry points (customer-import.ts)
+  database/migrations/
+  data-source.ts     TypeORM data source used by migrations, scripts and the Lambda
+certs/               Amazon RDS CA bundle for verified TLS
+scripts/             package-lambda.mjs
 ```
 
 ## Deployment
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
-
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Observability
-
-In production applications, observability is essential for understanding how your system behaves, detecting issues early, and maintaining reliable performance.
-
-[NestJS Observe](https://observe.nestjs.com) automatically instruments your NestJS application, giving you deep visibility into your system with minimal setup:
-
-- **Distributed tracing:** Follow requests across services and understand how they flow through your system.
-- **Waterfall analysis:** Visualize request execution and identify slow operations, bottlenecks, and unexpected delays.
-- **Performance analysis:** Analyze application performance in real time and quickly pinpoint areas that need optimization.
-- **Metrics:** Track key application and infrastructure metrics to understand system health and performance trends.
-- **Logging:** Centralize and correlate logs with traces and other telemetry to make debugging easier.
-- **Error tracking:** Detect errors quickly and investigate their root causes with the surrounding context.
-- **SLA monitoring:** Track service-level objectives and identify when your application is approaching or exceeding defined thresholds.
-- **Alarms and alerts:** Set up alerts for critical errors, performance degradation, SLA violations, and other anomalies so your team can react quickly.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Auto-instrument your application with [NestJS Observer](https://observer.nestjs.com). Distributed tracing, metrics, and logging made easy. Error tracking and performance monitoring for your NestJS applications.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+Today the API runs on Railway from the `Dockerfile` (it runs pending migrations on start). The
+plan is to move it to AWS ECS Fargate next to the database; see the production checklist in
+[docs/aws-setup.md](docs/aws-setup.md#production-checklist).

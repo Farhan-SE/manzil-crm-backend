@@ -23,6 +23,7 @@ import { PaymentsModule } from './payments/payments.module.js';
 import { ReportsModule } from './reports/reports.module.js';
 import { HelpModule } from './help/help.module.js';
 import { APP_INTERCEPTOR } from '@nestjs/core';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { TenantsModule } from './tenants/tenants.module.js';
 import { AccessModule } from './access/access.module.js';
 import { TenantInterceptor } from './tenants/tenant.interceptor.js';
@@ -39,6 +40,11 @@ import { TenantSubscriber } from './tenants/tenant.subscriber.js';
       autoLoadEntities: true,
       synchronize: false,
       subscribers: [TenantSubscriber],
+    }),
+    // Only routes that add ThrottlerGuard are limited; each sets its own limit with @Throttle.
+    ThrottlerModule.forRoot({
+      throttlers: [{ ttl: 60_000, limit: 20 }],
+      errorMessage: 'Too many attempts. Please wait a few minutes and try again.',
     }),
     TenantsModule,
     AccessModule,

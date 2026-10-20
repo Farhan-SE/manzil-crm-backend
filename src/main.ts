@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module.js';
 import { ValidationPipe } from '@nestjs/common';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 
 
 function corsOrigin() {
@@ -14,7 +15,9 @@ function corsOrigin() {
 }
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // Behind Railway's proxy (later the ALB), so rate limits see the visitor's IP, not the proxy's.
+  app.set('trust proxy', 1);
   app.useGlobalPipes(new ValidationPipe({
     whitelist: true,
     forbidNonWhitelisted: true,

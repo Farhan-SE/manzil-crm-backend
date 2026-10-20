@@ -24,15 +24,20 @@
     "migration:run": "npm run build && npm run typeorm -- migration:run -d dist/data-source.js",
     "migration:run:prod": "node ./node_modules/typeorm/cli.js migration:run -d dist/data-source.js",
     "migration:revert": "npm run build && npm run typeorm -- migration:revert -d dist/data-source.js",
-    "super-admin:create": "npm run build && node dist/scripts/create-super-admin.js"
+    "super-admin:create": "npm run build && node dist/scripts/create-super-admin.js",
+    "lambda:package": "node scripts/package-lambda.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1152.0",
+    "@aws-sdk/client-sqs": "^3.1152.0",
+    "@aws-sdk/s3-presigned-post": "^3.1152.0",
     "@nestjs/common": "^12.0.1",
     "@nestjs/config": "^12.0.0",
     "@nestjs/core": "^12.0.1",
     "@nestjs/jwt": "^12.0.1",
     "@nestjs/passport": "^12.0.0",
     "@nestjs/platform-express": "^12.0.1",
+    "@nestjs/throttler": "^6.7.1",
     "@nestjs/typeorm": "^12.0.1",
     "@types/multer": "^2.2.0",
     "bcrypt": "^6.0.0",
