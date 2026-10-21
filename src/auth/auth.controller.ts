@@ -3,6 +3,7 @@ import { AuthService } from './auth.service.js';
 import { LoginDto } from "./login.dto.js";
 import { AddUserDto, SetTeamDto } from "./add-user.dto.js";
 import { ChangePasswordDto } from "./change-password.dto.js";
+import { ResetPasswordDto } from "./reset-password.dto.js";
 import { BlockUserDto } from "./block-user.dto.js";
 import { ChangeRoleDto } from "./change-role.dto.js";
 import { FindStaffDto, StarUserDto, SuspendUserDto, TransferLeadsDto, UpdateStaffProfileDto } from "./staff.dto.js";
@@ -136,11 +137,8 @@ export class AuthController {
     @Post('reset-password-token')
     @UseGuards(ThrottlerGuard)
     @Throttle({ default: { limit: 10, ttl: 15 * 60_000 } })
-    async resetPasswordWithToken(
-        @Body('token') token: string,
-        @Body('new_password') newPassword: string,
-    ) {
-        return this.authService.resetPassword(token, newPassword);
+    async resetPasswordWithToken(@Body() dto: ResetPasswordDto) {
+        return this.authService.resetPassword(dto.token, dto.new_password);
     }
 
     
