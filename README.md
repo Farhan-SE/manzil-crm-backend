@@ -46,6 +46,8 @@ The API listens on `PORT` (default `3001`).
 | `WHATSAPP_APP_SECRET` | for WhatsApp | Meta app → App settings → Basic → App secret. Every webhook delivery is checked against it. |
 | `WHATSAPP_ACCESS_TOKEN` | for WhatsApp | Token that sends replies. The one on Meta's API Setup page expires in 24 hours; use a System User token for anything longer. |
 | `WHATSAPP_GRAPH_API_VERSION` | no | Defaults to `v23.0` |
+| `AI_SERVICE_URL` | no | Base URL of `manzil-ai-service`, e.g. `http://127.0.0.1:8010`. **When unset, every WhatsApp message gets a fixed reply** instead of the property chatbot. |
+| `AI_SERVICE_KEY` | with `REQUIRE_API_KEY` on the AI service | Sent as `X-API-Key`; must equal the AI service's `SERVICE_API_KEY` |
 | `IMPORT_QUEUE_URL` | no | SQS queue for imports. **When unset, the API runs imports in its own process** — handy for local development without the Lambda. When set, imports are queued and the Lambda runs them. |
 
 Never commit `.env`.

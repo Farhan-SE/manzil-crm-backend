@@ -1,14 +1,19 @@
 import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { runInTenant } from '../tenants/tenant-context.js';
+import { InventorySearch } from './inventory-search.js';
+import { PropertyChatClient } from './property-chat.client.js';
+import { inventoryReply } from './property-reply.js';
 import { WhatsappClient } from './whatsapp.client.js';
+import { WhatsappLeadService } from './whatsapp-lead.service.js';
 import { WhatsappNumber } from './whatsapp-number.entity.js';
 import { parseFailedDeliveries, parseTextMessages, type IncomingWhatsappText } from './whatsapp-webhook.js';
 import type { AddWhatsappNumberDto } from './whatsapp.dto.js';
 
 const DEDUP_MS = 10 * 60 * 1000;
 
-// Stands in until the chatbot is connected, so the round trip through Meta can be tested on its own.
+// Sent when no chatbot is configured (AI_SERVICE_URL unset), so the round trip through Meta can still be tested.
 const PLACEHOLDER_REPLY = 'Thanks for your message! Our team will get back to you shortly.';
 
 @Injectable()
@@ -20,6 +25,9 @@ export class WhatsappService {
     constructor(
         @InjectRepository(WhatsappNumber) private readonly numbers: Repository<WhatsappNumber>,
         private readonly whatsapp: WhatsappClient,
+        private readonly propertyChat: PropertyChatClient,
+        private readonly inventory: InventorySearch,
+        private readonly leads: WhatsappLeadService,
     ) { }
 
     async handleWebhook(payload: unknown): Promise<void> {
@@ -47,7 +55,27 @@ export class WhatsappService {
             this.logger.warn(`WhatsApp number ${message.phoneNumberId} isn't linked to a company — message ignored`);
             return;
         }
-        await this.whatsapp.sendText(message.phoneNumberId, message.senderId, PLACEHOLDER_REPLY);
+        const send = (body: string) => this.whatsapp.sendText(message.phoneNumberId, message.senderId, body);
+
+        if (!this.propertyChat.isConfigured()) {
+            await send(PLACEHOLDER_REPLY);
+            this.logger.log(`WhatsApp reply accepted by Meta for message ${message.messageId}`);
+            return;
+        }
+
+        const turn = await this.propertyChat.send(message.text, `${message.phoneNumberId}:${message.senderId}`);
+        if (turn.reply) await send(turn.reply);
+        await runInTenant(number.tenant_id, async () => {
+            if (turn.search) {
+                const result = await this.inventory.find(number.tenant_id, turn.parameters);
+                await send(inventoryReply(result, turn.parameters, turn.reply_language));
+                this.logger.log(`WhatsApp enquiry ${turn.lead_key} matched ${result.total} units`);
+            }
+            // The customer has had their answer; a failure here is staff-side only.
+            await this.leads.save(number.tenant_id, message, turn).catch((error) =>
+                this.logger.error(`Couldn't save the WhatsApp lead for ${message.messageId}`, error as Error),
+            );
+        });
         this.logger.log(`WhatsApp reply accepted by Meta for message ${message.messageId}`);
     }
 
