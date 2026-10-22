@@ -42,6 +42,10 @@ The API listens on `PORT` (default `3001`).
 | `AWS_REGION` | for imports | `ap-southeast-2` in the test environment |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | locally, for imports | Keys of the `manzil-backend-local` IAM user. Not used on AWS, where the task role provides credentials. |
 | `IMPORT_BUCKET` | for imports | S3 bucket that receives uploaded spreadsheets |
+| `WHATSAPP_VERIFY_TOKEN` | for WhatsApp | Any secret string; the same value goes in Meta's webhook settings |
+| `WHATSAPP_APP_SECRET` | for WhatsApp | Meta app → App settings → Basic → App secret. Every webhook delivery is checked against it. |
+| `WHATSAPP_ACCESS_TOKEN` | for WhatsApp | Token that sends replies. The one on Meta's API Setup page expires in 24 hours; use a System User token for anything longer. |
+| `WHATSAPP_GRAPH_API_VERSION` | no | Defaults to `v23.0` |
 | `IMPORT_QUEUE_URL` | no | SQS queue for imports. **When unset, the API runs imports in its own process** — handy for local development without the Lambda. When set, imports are queued and the Lambda runs them. |
 
 Never commit `.env`.

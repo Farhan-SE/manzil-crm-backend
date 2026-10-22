@@ -15,7 +15,8 @@ function corsOrigin() {
 }
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // rawBody: the WhatsApp webhook signature is computed over the exact bytes Meta sent.
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true });
   // Behind Railway's proxy (later the ALB), so rate limits see the visitor's IP, not the proxy's.
   app.set('trust proxy', 1);
   app.useGlobalPipes(new ValidationPipe({

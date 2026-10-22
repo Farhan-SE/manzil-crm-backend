@@ -22,6 +22,7 @@ import { ApprovalsModule } from './approvals/approvals.module.js';
 import { PaymentsModule } from './payments/payments.module.js';
 import { ReportsModule } from './reports/reports.module.js';
 import { HelpModule } from './help/help.module.js';
+import { WhatsappModule } from './whatsapp/whatsapp.module.js';
 import { APP_INTERCEPTOR } from '@nestjs/core';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { TenantsModule } from './tenants/tenants.module.js';
@@ -67,6 +68,7 @@ import { TenantSubscriber } from './tenants/tenant.subscriber.js';
     PaymentsModule,
     ReportsModule,
     HelpModule,
+    WhatsappModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_INTERCEPTOR, useClass: TenantInterceptor }],
