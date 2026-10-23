@@ -108,6 +108,10 @@ export class Lead {
     @Column({ default: 'inquiry' })
     stage: string;
 
+    /** The WhatsApp chatbot's id for the enquiry, so later messages update this lead instead of opening another. */
+    @Column({ type: 'text', nullable: true, select: false })
+    whatsapp_key: string | null;
+
     // When the stage became 'sold'. Cleared if the lead is moved back out of it.
     @Column({ type: 'timestamptz', nullable: true })
     sold_at: Date | null;
