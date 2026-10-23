@@ -5,8 +5,10 @@ cd "$(dirname "$0")/.."
 
 git pull --ff-only
 docker build -t manzil-api .
+# Shared with the manzil-ai chatbot container, so AI_SERVICE_URL can be http://manzil-ai:8010.
+docker network create manzil >/dev/null 2>&1 || true
 docker rm -f manzil-api 2>/dev/null || true
-docker run -d --name manzil-api --restart unless-stopped --env-file .env -p 3001:3001 manzil-api
+docker run -d --name manzil-api --restart unless-stopped --network manzil --env-file .env -p 3001:3001 manzil-api
 docker image prune -f >/dev/null
 
 sleep 20

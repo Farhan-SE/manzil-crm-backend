@@ -183,6 +183,11 @@ variables as the local `.env` without the AWS keys, plus `PORT=3001`, `FRONTEND_
 It pulls, rebuilds the image, replaces the container and prints the last log lines. After editing
 `.env`, run it too: `docker restart` does not re-read `.env`. Logs: `docker logs --tail 50 manzil-api`.
 
+The WhatsApp chatbot (`manzil-ai-service`) runs on the same server as the container `manzil-ai`, with
+its Redis as `manzil-redis`, all on the Docker network `manzil`. The API reaches it with
+`AI_SERVICE_URL=http://manzil-ai:8010` and `AI_SERVICE_KEY` (the chatbot's `SERVICE_API_KEY`). See that
+repo's README for its own deploy script.
+
 ## CloudFront: HTTPS in front of the API
 
 The frontend is served over HTTPS, so the API has to be too, and there is no custom domain yet.
