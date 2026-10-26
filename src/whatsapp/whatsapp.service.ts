@@ -1,17 +1,18 @@
-import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { runInTenant } from '../tenants/tenant-context.js';
-import { InventorySearch } from './inventory-search.js';
+import { InventorySearch, type OfferedUnits } from './inventory-search.js';
 import { PropertyChatClient } from './property-chat.client.js';
 import { inventoryReply } from './property-reply.js';
 import { WhatsappClient } from './whatsapp.client.js';
-import { WhatsappLeadService } from './whatsapp-lead.service.js';
+import { WhatsappLeadService, type ChatContact } from './whatsapp-lead.service.js';
 import { WhatsappNumber } from './whatsapp-number.entity.js';
 import { parseFailedDeliveries, parseTextMessages, type IncomingWhatsappText } from './whatsapp-webhook.js';
-import type { AddWhatsappNumberDto } from './whatsapp.dto.js';
+import type { AddWhatsappNumberDto, TestChatDto } from './whatsapp.dto.js';
 
 const DEDUP_MS = 10 * 60 * 1000;
+const TEST_SUB_SOURCE = 'Chatbot test';
 
 // Sent when no chatbot is configured (AI_SERVICE_URL unset), so the round trip through Meta can still be tested.
 const PLACEHOLDER_REPLY = 'Thanks for your message! Our team will get back to you shortly.';
@@ -63,20 +64,49 @@ export class WhatsappService {
             return;
         }
 
-        const turn = await this.propertyChat.send(message.text, `${message.phoneNumberId}:${message.senderId}`);
+        await this.converse(number.tenant_id, message, message.text, `${message.phoneNumberId}:${message.senderId}`, send);
+        this.logger.log(`WhatsApp reply accepted by Meta for message ${message.messageId}`);
+    }
+
+    /** One chatbot turn, shared by WhatsApp and the in-app test chat; `send` delivers each reply. */
+    private async converse(
+        tenantId: string,
+        contact: ChatContact,
+        text: string,
+        sessionId: string,
+        send: (body: string) => Promise<unknown>,
+        subSource?: string,
+    ): Promise<void> {
+        const turn = await this.propertyChat.send(text, sessionId);
         if (turn.reply) await send(turn.reply);
-        await runInTenant(number.tenant_id, async () => {
+        await runInTenant(tenantId, async () => {
+            let offered: OfferedUnits | undefined;
             if (turn.search) {
-                const result = await this.inventory.find(number.tenant_id, turn.parameters);
-                await send(inventoryReply(result, turn.parameters, turn.reply_language));
-                this.logger.log(`WhatsApp enquiry ${turn.lead_key} matched ${result.total} units`);
+                offered = { ...(await this.inventory.find(tenantId, turn.parameters)), portionsInstead: false };
+                if (offered.total === 0 && turn.parameters.portion === 'full') {
+                    const portions = await this.inventory.find(tenantId, { ...turn.parameters, portion: null });
+                    if (portions.total > 0) offered = { ...portions, portionsInstead: true };
+                }
+                await send(inventoryReply(offered, turn.parameters, turn.reply_language, offered.portionsInstead));
+                this.logger.log(`Chatbot enquiry ${turn.lead_key} matched ${offered.total} units`);
             }
             // The customer has had their answer; a failure here is staff-side only.
-            await this.leads.save(number.tenant_id, message, turn).catch((error) =>
-                this.logger.error(`Couldn't save the WhatsApp lead for ${message.messageId}`, error as Error),
+            await this.leads.save(tenantId, contact, turn, offered, subSource).catch((error) =>
+                this.logger.error(`Couldn't save the chatbot lead for ${contact.senderId}`, error as Error),
             );
         });
-        this.logger.log(`WhatsApp reply accepted by Meta for message ${message.messageId}`);
+    }
+
+    async testChat(tenantId: string, userId: number, dto: TestChatDto): Promise<{ replies: string[] }> {
+        if (!this.propertyChat.isConfigured()) {
+            throw new ServiceUnavailableException('The chatbot is not configured on this server (AI_SERVICE_URL is unset)');
+        }
+        const replies: string[] = [];
+        const contact = { senderId: dto.phone.replace(/\D/g, ''), customerName: dto.name?.trim() || null };
+        await this.converse(tenantId, contact, dto.message, `test:${userId}:${dto.session_id}`, async (body) => {
+            replies.push(body);
+        }, TEST_SUB_SOURCE);
+        return { replies };
     }
 
     listNumbers(tenantId: string) {

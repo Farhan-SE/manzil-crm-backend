@@ -21,8 +21,8 @@ describe('inventoryReply', () => {
             minPrice: 55_000,
             maxPrice: 60_000,
             shown: [
-                { project: 'DHA Phase 6', unitType: 'Upper Portion', beds: 2, price: 55_000 },
-                { project: 'DHA Phase 6', unitType: null, beds: 2, price: 58_000 },
+                { unitId: 'u1', unitNumber: 'U1', project: 'DHA Phase 6', unitType: 'Upper Portion', beds: 2, price: 55_000 },
+                { unitId: 'u2', unitNumber: 'U2', project: 'DHA Phase 6', unitType: null, beds: 2, price: 58_000 },
             ],
         }, upperPortionToRent, 'ur');
 
@@ -35,5 +35,17 @@ describe('inventoryReply', () => {
     it('says so plainly when nothing matches', () => {
         const reply = inventoryReply({ total: 0, minPrice: null, maxPrice: null, shown: [] }, upperPortionToRent, 'en');
         expect(reply).toMatch(/^Nothing matches these details right now/);
+    });
+
+    it('says a full house is not available when it offers portions instead', () => {
+        const reply = inventoryReply({
+            total: 1,
+            minPrice: 55_000,
+            maxPrice: 55_000,
+            shown: [{ unitId: 'u1', unitNumber: 'U1', project: 'DHA Phase 6', unitType: null, beds: 2, price: 55_000 }],
+        }, { ...upperPortionToRent, portion: 'full' }, 'ur', true);
+
+        expect(reply).toContain('Poora ghar is waqt available nahi, lekin aap ki details ke mutabiq 1 portion available hai');
+        expect(reply).not.toContain('full house');
     });
 });

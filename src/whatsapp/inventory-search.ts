@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, Repository, type SelectQueryBuilder } from 'typeorm';
 import { Unit } from '../units/unit.entity.js';
+import { areaWords, placeMatches } from './place-match.js';
 import type { PropertyEnquiry } from './property-chat.client.js';
 
 const MAX_LISTED = 3;
@@ -17,6 +18,8 @@ const TYPE_WORDS = {
 };
 
 export interface InventoryMatch {
+    unitId: string;
+    unitNumber: string;
     project: string;
     unitType: string | null;
     beds: number | null;
@@ -30,6 +33,9 @@ export interface InventorySearchResult {
     shown: InventoryMatch[];
 }
 
+/** What the chatbot sent; portionsInstead when no full house matched and portions were offered. */
+export type OfferedUnits = InventorySearchResult & { portionsInstead: boolean };
+
 @Injectable()
 export class InventorySearch {
     constructor(@InjectRepository(Unit) private readonly units: Repository<Unit>) { }
@@ -41,7 +47,6 @@ export class InventorySearch {
             .innerJoin('unit.project', 'project')
             .leftJoin('interest', 'interest', 'interest.id = project.interest_id')
             .leftJoin('category', 'category', 'category.id = project.category_id')
-            .leftJoin('location', 'location', 'location.id = project.location_id')
             .where('unit.tenant_id = :tenantId', { tenantId })
             .andWhere("unit.status = 'available'")
             .andWhere("unit.approval_status = 'approved'")
@@ -60,16 +65,13 @@ export class InventorySearch {
             }));
         }
         if (enquiry.area) {
-            // "DHA Phase 6 Lahore" should still find a project in "DHA Phase 6": every word long enough to mean something must appear somewhere.
-            const words = enquiry.area.split(/[\s,]+/).filter((w) => w.length >= 3 && !/^(phase|block|sector|town)$/i.test(w));
-            const place = "concat_ws(' ', project.project_name, project.location, project.city, location.name, location.city)";
-            const specific = words.filter((w) => !/^(lahore|karachi|islamabad|rawalpindi)$/i.test(w));
-            (specific.length ? specific : words).forEach((word, i) => {
-                qb.andWhere(`${place} ILIKE :area${i}`, { [`area${i}`]: `%${word}%` });
-            });
+            const projectIds = await this.projectsIn(tenantId, enquiry.area);
+            if (projectIds?.length === 0) return { total: 0, minPrice: null, maxPrice: null, shown: [] };
+            if (projectIds) qb.andWhere('project.id IN (:...projectIds)', { projectIds });
         }
         if (enquiry.portion === 'upper') qb.andWhere("concat_ws(' ', unit.unit_type, unit.floor) ILIKE ANY (ARRAY['%upper%', '%first%'])");
         if (enquiry.portion === 'lower') qb.andWhere("concat_ws(' ', unit.unit_type, unit.floor) ILIKE ANY (ARRAY['%lower%', '%ground%'])");
+        if (enquiry.portion === 'full') qb.andWhere("coalesce(unit.unit_type, '') NOT ILIKE ALL (ARRAY['%portion%', '%upper%', '%lower%'])");
         if (enquiry.beds) qb.andWhere('unit.beds = :beds', { beds: enquiry.beds });
         if (enquiry.budget) qb.andWhere('unit.price <= :budget', { budget: enquiry.budget });
 
@@ -80,18 +82,34 @@ export class InventorySearch {
                 .addSelect('MAX(unit.price)', 'max')
                 .getRawOne<{ total: string; min: string | null; max: string | null }>(),
             qb.clone()
-                .select(['project.project_name AS project', 'unit.unit_type AS unit_type', 'unit.beds AS beds', 'unit.price AS price'])
+                .select(['unit.id AS unit_id', 'unit.unit_number AS unit_number', 'project.project_name AS project', 'unit.unit_type AS unit_type', 'unit.beds AS beds', 'unit.price AS price'])
                 .orderBy('unit.price', 'ASC')
                 .limit(MAX_LISTED)
-                .getRawMany<{ project: string; unit_type: string | null; beds: number | null; price: string }>(),
+                .getRawMany<{ unit_id: string; unit_number: string; project: string; unit_type: string | null; beds: number | null; price: string }>(),
         ]);
 
         return {
             total: Number(totals?.total ?? 0),
             minPrice: totals?.min != null ? Number(totals.min) : null,
             maxPrice: totals?.max != null ? Number(totals.max) : null,
-            shown: shown.map((row) => ({ project: row.project, unitType: row.unit_type, beds: row.beds, price: Number(row.price) })),
+            shown: shown.map((row) => ({ unitId: row.unit_id, unitNumber: row.unit_number, project: row.project, unitType: row.unit_type, beds: row.beds, price: Number(row.price) })),
         };
+    }
+
+    /** Active projects whose name or location fits the area, forgiving typos; null when the area says nothing usable. */
+    private async projectsIn(tenantId: string, area: string): Promise<string[] | null> {
+        const words = areaWords(area);
+        if (!words.length) return null;
+        const projects = await this.units.manager
+            .createQueryBuilder()
+            .select('project.id', 'id')
+            .addSelect("concat_ws(' ', project.project_name, project.location, project.city, location.name, location.city)", 'place')
+            .from('partner_project', 'project')
+            .leftJoin('location', 'location', 'location.id = project.location_id')
+            .where('project.tenant_id = :tenantId', { tenantId })
+            .andWhere('project.is_active = true')
+            .getRawMany<{ id: string; place: string }>();
+        return projects.filter((project) => placeMatches(project.place, words)).map((project) => project.id);
     }
 }
 

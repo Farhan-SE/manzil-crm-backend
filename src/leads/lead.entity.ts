@@ -20,6 +20,14 @@ export const PIPELINE_STAGES = ['inquiry', 'prospect', 'mature', 'pre_closure', 
 export type PipelineStage = (typeof PIPELINE_STAGES)[number];
 export const LEAD_STAGES = [...PIPELINE_STAGES, 'lost'];
 
+export interface ChatbotMatches {
+    shown_at: string;
+    total: number;
+    /** A full house was asked for but none matched, so portions were offered. */
+    portions_instead?: boolean;
+    units: { unit_id: string; project: string; unit_number: string; unit_type: string | null; beds: number | null; price: number }[];
+}
+
 @Entity()
 export class Lead {
 
@@ -111,6 +119,10 @@ export class Lead {
     /** The WhatsApp chatbot's id for the enquiry, so later messages update this lead instead of opening another. */
     @Column({ type: 'text', nullable: true, select: false })
     whatsapp_key: string | null;
+
+    /** The units the chatbot last offered the customer, as they were then. */
+    @Column({ type: 'jsonb', nullable: true })
+    chatbot_matches: ChatbotMatches | null;
 
     // When the stage became 'sold'. Cleared if the lead is moved back out of it.
     @Column({ type: 'timestamptz', nullable: true })

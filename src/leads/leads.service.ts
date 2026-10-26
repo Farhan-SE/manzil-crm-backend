@@ -545,6 +545,7 @@ export class LeadsService {
             temperature: lead.temperature,
             stage: lead.stage,
             sold_at: lead.sold_at,
+            chatbot_matches: lead.chatbot_matches,
             assigned_to: lead.assigned_to
                 ? {
                     id: lead.assigned_to.id,
