@@ -108,6 +108,12 @@ CORS, so the browser can post the file directly:
 
 Every frontend address that uploads files must be in `AllowedOrigins`.
 
+Unit and project photos and videos live in the same bucket under `media/<company id>/`. They are
+kept until deleted (the 1-day lifecycle rule only covers `imports/`). The bucket stays private: the
+CRM and the public share page (`/view/<token>`) show them through presigned links that expire after
+15 minutes, and the API checks each upload's first bytes before it is shown. The API needs
+`FRONTEND_URL` set to build the share links the chatbot sends.
+
 ## SQS
 
 | Queue | Settings |
@@ -227,11 +233,17 @@ It has two inline policies and nothing else.
       "Resource": "arn:aws:s3:::manzil-crm-imports-342572234891/imports/*"
     },
     {
+      "Sid": "InventoryMedia",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::manzil-crm-imports-342572234891/media/*"
+    },
+    {
       "Sid": "CheckUploads",
       "Effect": "Allow",
       "Action": "s3:ListBucket",
       "Resource": "arn:aws:s3:::manzil-crm-imports-342572234891",
-      "Condition": { "StringLike": { "s3:prefix": "imports/*" } }
+      "Condition": { "StringLike": { "s3:prefix": ["imports/*", "media/*"] } }
     }
   ]
 }

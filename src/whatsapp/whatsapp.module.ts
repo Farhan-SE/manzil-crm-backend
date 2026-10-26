@@ -5,6 +5,7 @@ import { Category } from '../categories/category.entity.js';
 import { Customers } from '../customer/customer.entity.js';
 import { Interest } from '../interests/interest.entity.js';
 import { Lead } from '../leads/lead.entity.js';
+import { MediaModule } from '../media/media.module.js';
 import { Source } from '../sources/source.entity.js';
 import { Unit } from '../units/unit.entity.js';
 import { InventorySearch } from './inventory-search.js';
@@ -19,6 +20,7 @@ import { WhatsappService } from './whatsapp.service.js';
     imports: [
         TypeOrmModule.forFeature([WhatsappNumber, Unit, Lead, Customers, Interest, Category, Source]),
         PassportModule.register({ defaultStrategy: 'jwt' }),
+        MediaModule,
     ],
     providers: [WhatsappService, WhatsappClient, PropertyChatClient, InventorySearch, WhatsappLeadService],
     controllers: [WhatsappWebhookController, WhatsappNumbersController, ChatbotTestController],

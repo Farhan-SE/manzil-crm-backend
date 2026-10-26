@@ -25,7 +25,7 @@ export interface ChatbotMatches {
     total: number;
     /** A full house was asked for but none matched, so portions were offered. */
     portions_instead?: boolean;
-    units: { unit_id: string; project: string; unit_number: string; unit_type: string | null; beds: number | null; price: number }[];
+    units: { unit_id: string; project: string; unit_number: string; unit_type: string | null; beds: number | null; price: number; has_media?: boolean }[];
 }
 
 @Entity()

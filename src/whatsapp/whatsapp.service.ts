@@ -3,8 +3,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { runInTenant } from '../tenants/tenant-context.js';
 import { InventorySearch, type OfferedUnits } from './inventory-search.js';
-import { PropertyChatClient } from './property-chat.client.js';
-import { inventoryReply } from './property-reply.js';
+import { MediaShareService } from '../media/media-share.service.js';
+import { MediaService } from '../media/media.service.js';
+import { PropertyChatClient, type PropertyChatTurn } from './property-chat.client.js';
+import { inventoryReply, mediaReply } from './property-reply.js';
 import { WhatsappClient } from './whatsapp.client.js';
 import { WhatsappLeadService, type ChatContact } from './whatsapp-lead.service.js';
 import { WhatsappNumber } from './whatsapp-number.entity.js';
@@ -29,6 +31,8 @@ export class WhatsappService {
         private readonly propertyChat: PropertyChatClient,
         private readonly inventory: InventorySearch,
         private readonly leads: WhatsappLeadService,
+        private readonly media: MediaService,
+        private readonly shares: MediaShareService,
     ) { }
 
     async handleWebhook(payload: unknown): Promise<void> {
@@ -78,6 +82,10 @@ export class WhatsappService {
         subSource?: string,
     ): Promise<void> {
         const turn = await this.propertyChat.send(text, sessionId);
+        if (turn.media_request) {
+            await send(await runInTenant(tenantId, () => this.mediaLink(tenantId, turn)));
+            return;
+        }
         if (turn.reply) await send(turn.reply);
         await runInTenant(tenantId, async () => {
             let offered: OfferedUnits | undefined;
@@ -95,6 +103,22 @@ export class WhatsappService {
                 this.logger.error(`Couldn't save the chatbot lead for ${contact.senderId}`, error as Error),
             );
         });
+    }
+
+    /** Answers "send me pictures of number N" with a link to that unit's photos and videos from the list last sent. */
+    private async mediaLink(tenantId: string, turn: PropertyChatTurn): Promise<string> {
+        const language = turn.reply_language;
+        const lead = turn.lead_key ? await this.leads.findByKey(tenantId, turn.lead_key) : null;
+        const units = lead?.chatbot_matches?.units ?? [];
+        if (!units.length) return mediaReply.nothingListed(language);
+        if (!turn.media_choice) return mediaReply.whichOne(units.length, language);
+        const unit = units[turn.media_choice - 1];
+        if (!unit) return mediaReply.notOnList(units.length, language);
+
+        if (!(await this.media.unitHasMedia(tenantId, unit.unit_id))) return mediaReply.link(unit, null, language);
+        const share = await this.shares.create(tenantId, unit.unit_id, lead!.id);
+        this.logger.log(`Chatbot sent a photo link for unit ${unit.unit_id} on lead ${lead!.id}`);
+        return mediaReply.link(unit, share.url, language);
     }
 
     async testChat(tenantId: string, userId: number, dto: TestChatDto): Promise<{ replies: string[] }> {

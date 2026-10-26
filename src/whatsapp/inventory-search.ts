@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Brackets, Repository, type SelectQueryBuilder } from 'typeorm';
+import { MediaService } from '../media/media.service.js';
 import { Unit } from '../units/unit.entity.js';
 import { areaWords, placeMatches } from './place-match.js';
 import type { PropertyEnquiry } from './property-chat.client.js';
@@ -24,6 +25,8 @@ export interface InventoryMatch {
     unitType: string | null;
     beds: number | null;
     price: number;
+    /** Photos and videos the client can be sent, the project's included. */
+    mediaCount: number;
 }
 
 export interface InventorySearchResult {
@@ -38,7 +41,10 @@ export type OfferedUnits = InventorySearchResult & { portionsInstead: boolean };
 
 @Injectable()
 export class InventorySearch {
-    constructor(@InjectRepository(Unit) private readonly units: Repository<Unit>) { }
+    constructor(
+        @InjectRepository(Unit) private readonly units: Repository<Unit>,
+        private readonly media: MediaService,
+    ) { }
 
     /** Available, approved units in the current company that fit the enquiry. */
     async find(tenantId: string, enquiry: PropertyEnquiry): Promise<InventorySearchResult> {
@@ -82,17 +88,18 @@ export class InventorySearch {
                 .addSelect('MAX(unit.price)', 'max')
                 .getRawOne<{ total: string; min: string | null; max: string | null }>(),
             qb.clone()
-                .select(['unit.id AS unit_id', 'unit.unit_number AS unit_number', 'project.project_name AS project', 'unit.unit_type AS unit_type', 'unit.beds AS beds', 'unit.price AS price'])
+                .select(['unit.id AS unit_id', 'unit.unit_number AS unit_number', 'project.id AS project_id', 'project.project_name AS project', 'unit.unit_type AS unit_type', 'unit.beds AS beds', 'unit.price AS price'])
                 .orderBy('unit.price', 'ASC')
                 .limit(MAX_LISTED)
-                .getRawMany<{ unit_id: string; unit_number: string; project: string; unit_type: string | null; beds: number | null; price: string }>(),
+                .getRawMany<{ unit_id: string; unit_number: string; project_id: string; project: string; unit_type: string | null; beds: number | null; price: string }>(),
         ]);
 
+        const mediaCounts = await this.media.countForUnits(tenantId, shown.map((row) => ({ id: row.unit_id, projectId: row.project_id })));
         return {
             total: Number(totals?.total ?? 0),
             minPrice: totals?.min != null ? Number(totals.min) : null,
             maxPrice: totals?.max != null ? Number(totals.max) : null,
-            shown: shown.map((row) => ({ unitId: row.unit_id, unitNumber: row.unit_number, project: row.project, unitType: row.unit_type, beds: row.beds, price: Number(row.price) })),
+            shown: shown.map((row) => ({ unitId: row.unit_id, unitNumber: row.unit_number, project: row.project, unitType: row.unit_type, beds: row.beds, price: Number(row.price), mediaCount: mediaCounts.get(row.unit_id) ?? 0 })),
         };
     }
 

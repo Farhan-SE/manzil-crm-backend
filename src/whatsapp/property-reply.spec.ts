@@ -21,14 +21,15 @@ describe('inventoryReply', () => {
             minPrice: 55_000,
             maxPrice: 60_000,
             shown: [
-                { unitId: 'u1', unitNumber: 'U1', project: 'DHA Phase 6', unitType: 'Upper Portion', beds: 2, price: 55_000 },
-                { unitId: 'u2', unitNumber: 'U2', project: 'DHA Phase 6', unitType: null, beds: 2, price: 58_000 },
+                { unitId: 'u1', unitNumber: 'U1', project: 'DHA Phase 6', unitType: 'Upper Portion', beds: 2, price: 55_000, mediaCount: 3 },
+                { unitId: 'u2', unitNumber: 'U2', project: 'DHA Phase 6', unitType: null, beds: 2, price: 58_000, mediaCount: 0 },
             ],
         }, upperPortionToRent, 'ur');
 
         expect(reply).toContain('3 properties available hain (Rs 55k – 60k)');
-        expect(reply).toContain('• DHA Phase 6 — 2 bed, Upper Portion, Rs 55k mahana');
-        expect(reply).toContain('• DHA Phase 6 — 2 bed, upper portion, Rs 58k mahana');
+        expect(reply).toContain('1. DHA Phase 6 — 2 bed, Upper Portion, Rs 55k mahana 📷');
+        expect(reply).toContain('2. DHA Phase 6 — 2 bed, upper portion, Rs 58k mahana' + String.fromCharCode(10));
+        expect(reply).toContain('us ka number likh dein');
         expect(reply).toContain('sab se munasib');
     });
 
@@ -42,7 +43,7 @@ describe('inventoryReply', () => {
             total: 1,
             minPrice: 55_000,
             maxPrice: 55_000,
-            shown: [{ unitId: 'u1', unitNumber: 'U1', project: 'DHA Phase 6', unitType: null, beds: 2, price: 55_000 }],
+            shown: [{ unitId: 'u1', unitNumber: 'U1', project: 'DHA Phase 6', unitType: null, beds: 2, price: 55_000, mediaCount: 0 }],
         }, { ...upperPortionToRent, portion: 'full' }, 'ur', true);
 
         expect(reply).toContain('Poora ghar is waqt available nahi, lekin aap ki details ke mutabiq 1 portion available hai');

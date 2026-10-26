@@ -38,6 +38,7 @@ function toMatches(result: OfferedUnits): ChatbotMatches {
             unit_type: m.unitType,
             beds: m.beds,
             price: m.price,
+            has_media: m.mediaCount > 0,
         })),
     };
 }
@@ -98,6 +99,10 @@ export class WhatsappLeadService {
             // Two webhook deliveries racing: the unique index on whatsapp_key keeps one lead.
             if ((error as { code?: string }).code !== '23505') throw error;
         }
+    }
+
+    findByKey(tenantId: string, leadKey: string) {
+        return this.leads.findOne({ where: { tenant_id: tenantId, whatsapp_key: leadKey }, select: { id: true, chatbot_matches: true } });
     }
 
     private async leadFields(tenantId: string, enquiry: PropertyEnquiry, subSource: string) {
