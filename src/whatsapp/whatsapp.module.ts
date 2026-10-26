@@ -11,7 +11,7 @@ import { InventorySearch } from './inventory-search.js';
 import { PropertyChatClient } from './property-chat.client.js';
 import { WhatsappNumber } from './whatsapp-number.entity.js';
 import { WhatsappClient } from './whatsapp.client.js';
-import { WhatsappNumbersController, WhatsappWebhookController } from './whatsapp.controller.js';
+import { ChatbotTestController, WhatsappNumbersController, WhatsappWebhookController } from './whatsapp.controller.js';
 import { WhatsappLeadService } from './whatsapp-lead.service.js';
 import { WhatsappService } from './whatsapp.service.js';
 
@@ -21,6 +21,6 @@ import { WhatsappService } from './whatsapp.service.js';
         PassportModule.register({ defaultStrategy: 'jwt' }),
     ],
     providers: [WhatsappService, WhatsappClient, PropertyChatClient, InventorySearch, WhatsappLeadService],
-    controllers: [WhatsappWebhookController, WhatsappNumbersController],
+    controllers: [WhatsappWebhookController, WhatsappNumbersController, ChatbotTestController],
 })
 export class WhatsappModule { }

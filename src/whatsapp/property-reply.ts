@@ -19,7 +19,13 @@ function range(result: InventorySearchResult) {
 }
 
 /** The message that answers a completed enquiry with what the company has. */
-export function inventoryReply(result: InventorySearchResult, enquiry: PropertyEnquiry, language: 'ur' | 'en') {
+export function inventoryReply(
+    result: InventorySearchResult,
+    enquiry: PropertyEnquiry,
+    language: 'ur' | 'en',
+    /** No full house matched, so these are the portions that did. */
+    portionsInstead = false,
+) {
     const en = language === 'en';
     if (result.total === 0) {
         return en
@@ -30,14 +36,18 @@ export function inventoryReply(result: InventorySearchResult, enquiry: PropertyE
     const lines = result.shown.map((match) => {
         const details = [
             match.beds ? `${match.beds} bed` : null,
-            match.unitType || (enquiry.portion ? PORTION[enquiry.portion] : null),
+            match.unitType || (enquiry.portion && !portionsInstead ? PORTION[enquiry.portion] : null),
             `Rs ${formatPrice(match.price)}${enquiry.purpose === 'rent' ? (en ? '/month' : ' mahana') : ''}`,
         ].filter(Boolean);
         return `• ${match.project} — ${details.join(', ')}`;
     });
     const more = result.total > result.shown.length;
 
-    const heading = en
+    const heading = portionsInstead
+        ? en
+            ? `No full house is available right now, but ${result.total} ${result.total === 1 ? 'portion matches' : 'portions match'} your details (${range(result)}):`
+            : `Poora ghar is waqt available nahi, lekin aap ki details ke mutabiq ${result.total} ${result.total === 1 ? 'portion' : 'portions'} available ${result.total === 1 ? 'hai' : 'hain'} (${range(result)}):`
+        : en
         ? `${result.total} ${result.total === 1 ? 'property matches' : 'properties match'} your details (${range(result)}):`
         : `Aap ki details ke mutabiq ${result.total} ${result.total === 1 ? 'property' : 'properties'} available ${result.total === 1 ? 'hai' : 'hain'} (${range(result)}):`;
     const closing = en
