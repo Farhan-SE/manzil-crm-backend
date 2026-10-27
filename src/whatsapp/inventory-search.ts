@@ -23,6 +23,8 @@ export interface InventoryMatch {
     unitNumber: string;
     project: string;
     unitType: string | null;
+    /** Locality and city of the project, e.g. "Gulberg III, Lahore". */
+    location: string | null;
     beds: number | null;
     price: number;
     /** Photos and videos the client can be sent, the project's included. */
@@ -88,10 +90,10 @@ export class InventorySearch {
                 .addSelect('MAX(unit.price)', 'max')
                 .getRawOne<{ total: string; min: string | null; max: string | null }>(),
             qb.clone()
-                .select(['unit.id AS unit_id', 'unit.unit_number AS unit_number', 'project.id AS project_id', 'project.project_name AS project', 'unit.unit_type AS unit_type', 'unit.beds AS beds', 'unit.price AS price'])
+                .select(['unit.id AS unit_id', 'unit.unit_number AS unit_number', 'project.id AS project_id', 'project.project_name AS project', "concat_ws(', ', nullif(project.location, ''), nullif(project.city, '')) AS location", 'unit.unit_type AS unit_type', 'unit.beds AS beds', 'unit.price AS price'])
                 .orderBy('unit.price', 'ASC')
                 .limit(MAX_LISTED)
-                .getRawMany<{ unit_id: string; unit_number: string; project_id: string; project: string; unit_type: string | null; beds: number | null; price: string }>(),
+                .getRawMany<{ unit_id: string; unit_number: string; project_id: string; project: string; location: string; unit_type: string | null; beds: number | null; price: string }>(),
         ]);
 
         const mediaCounts = await this.media.countForUnits(tenantId, shown.map((row) => ({ id: row.unit_id, projectId: row.project_id })));
@@ -99,7 +101,7 @@ export class InventorySearch {
             total: Number(totals?.total ?? 0),
             minPrice: totals?.min != null ? Number(totals.min) : null,
             maxPrice: totals?.max != null ? Number(totals.max) : null,
-            shown: shown.map((row) => ({ unitId: row.unit_id, unitNumber: row.unit_number, project: row.project, unitType: row.unit_type, beds: row.beds, price: Number(row.price), mediaCount: mediaCounts.get(row.unit_id) ?? 0 })),
+            shown: shown.map((row) => ({ unitId: row.unit_id, unitNumber: row.unit_number, project: row.project, location: row.location || null, unitType: row.unit_type, beds: row.beds, price: Number(row.price), mediaCount: mediaCounts.get(row.unit_id) ?? 0 })),
         };
     }
 

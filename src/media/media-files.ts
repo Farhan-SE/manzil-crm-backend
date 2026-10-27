@@ -36,8 +36,10 @@ export function presignMediaUpload(key: string, mime: string, maxBytes: number) 
 /** Size and first bytes of an upload, or null when nothing was uploaded under the key. */
 export async function inspectUpload(key: string): Promise<{ size: number; head: Buffer } | null> {
     try {
-        const meta = await s3.send(new HeadObjectCommand({ Bucket: importBucket(), Key: key }));
-        const part = await s3.send(new GetObjectCommand({ Bucket: importBucket(), Key: key, Range: 'bytes=0-63' }));
+        const [meta, part] = await Promise.all([
+            s3.send(new HeadObjectCommand({ Bucket: importBucket(), Key: key })),
+            s3.send(new GetObjectCommand({ Bucket: importBucket(), Key: key, Range: 'bytes=0-63' })),
+        ]);
         return { size: meta.ContentLength ?? 0, head: Buffer.from(await part.Body!.transformToByteArray()) };
     } catch (error) {
         const name = (error as { name?: string }).name;

@@ -95,14 +95,32 @@ export class WhatsappService {
                     const portions = await this.inventory.find(tenantId, { ...turn.parameters, portion: null });
                     if (portions.total > 0) offered = { ...portions, portionsInstead: true };
                 }
-                await send(inventoryReply(offered, turn.parameters, turn.reply_language, offered.portionsInstead));
-                this.logger.log(`Chatbot enquiry ${turn.lead_key} matched ${offered.total} units`);
             }
-            // The customer has had their answer; a failure here is staff-side only.
+            // Saved before the list goes out so the photo links can be tied to the lead; a failure is staff-side only.
             await this.leads.save(tenantId, contact, turn, offered, subSource).catch((error) =>
                 this.logger.error(`Couldn't save the chatbot lead for ${contact.senderId}`, error as Error),
             );
+            if (offered) {
+                const links = await this.photoLinks(tenantId, turn, offered);
+                await send(inventoryReply(offered, turn.parameters, turn.reply_language, offered.portionsInstead, links));
+                this.logger.log(`Chatbot enquiry ${turn.lead_key} matched ${offered.total} units`);
+            }
         });
+    }
+
+    /** A share link for each listed unit that has photos or videos. */
+    private async photoLinks(tenantId: string, turn: PropertyChatTurn, offered: OfferedUnits): Promise<Map<string, string>> {
+        const links = new Map<string, string>();
+        try {
+            const lead = turn.lead_key ? await this.leads.findByKey(tenantId, turn.lead_key) : null;
+            for (const match of offered.shown) {
+                if (!match.mediaCount) continue;
+                links.set(match.unitId, (await this.shares.create(tenantId, match.unitId, lead?.id ?? null)).url);
+            }
+        } catch (error) {
+            this.logger.error(`Couldn't create photo links for enquiry ${turn.lead_key}`, error as Error);
+        }
+        return links;
     }
 
     /** Answers "send me pictures of number N" with a link to that unit's photos and videos from the list last sent. */
