@@ -19,7 +19,10 @@ import type { RawBodyRequest } from '@nestjs/common';
 import type { Request } from 'express';
 import { JwtAuthGuard } from '../strategies/auth.guard.js';
 import { SuperAdminGuard } from '../strategies/super-admin.guard.js';
-import { AddWhatsappNumberDto } from './whatsapp.dto.js';
+import { Can } from '../access/permission.guard.js';
+import type { Requester } from '../access/access.js';
+import { UserSession } from '../strategies/user.decorator.js';
+import { AddWhatsappNumberDto, TestChatDto } from './whatsapp.dto.js';
 import { isValidSignature } from './whatsapp-webhook.js';
 import { WhatsappService } from './whatsapp.service.js';
 
@@ -76,5 +79,20 @@ export class WhatsappNumbersController {
     @Delete(':id')
     remove(@Param('tenantId', ParseUUIDPipe) tenantId: string, @Param('id', ParseUUIDPipe) id: string) {
         return this.whatsappService.removeNumber(tenantId, id);
+    }
+}
+
+// Lets admins talk to the property chatbot from the CRM, without going through Meta.
+@Controller('chatbot/test')
+@UseGuards(JwtAuthGuard)
+export class ChatbotTestController {
+    constructor(private readonly whatsappService: WhatsappService) { }
+
+    @Can('settings.manage')
+    @Post()
+    @HttpCode(200)
+    send(@Body() dto: TestChatDto, @UserSession() user: Requester) {
+        if (!user.tenantId) throw new ForbiddenException('This action needs a company account');
+        return this.whatsappService.testChat(user.tenantId, user.userId, dto);
     }
 }

@@ -19,6 +19,9 @@ export interface PropertyChatTurn {
     search: boolean;
     lead_key: string | null;
     session_reset: boolean;
+    /** The customer asked for photos or videos of a listed property; media_choice is its list number, if they said. */
+    media_request?: boolean;
+    media_choice?: number | null;
 }
 
 @Injectable()

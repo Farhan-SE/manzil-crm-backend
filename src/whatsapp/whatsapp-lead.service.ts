@@ -8,10 +8,14 @@ import { Customers } from '../customer/customer.entity.js';
 import { Interest } from '../interests/interest.entity.js';
 import { Lead } from '../leads/lead.entity.js';
 import { Source } from '../sources/source.entity.js';
+import type { ChatbotMatches } from '../leads/lead.entity.js';
+import type { OfferedUnits } from './inventory-search.js';
 import type { PropertyChatTurn, PropertyEnquiry } from './property-chat.client.js';
 import type { IncomingWhatsappText } from './whatsapp-webhook.js';
 
 const SUB_SOURCE = 'WhatsApp chatbot';
+
+export type ChatContact = Pick<IncomingWhatsappText, 'senderId' | 'customerName'>;
 
 // The company's own interest and category names the enquiry is filed under, best first.
 const INTEREST_NAMES = { rent: ['rent', 'kiraya', 'lease'], buy: ['buy', 'purchase', 'sale'] };
@@ -21,6 +25,23 @@ const CATEGORY_NAMES = {
     plot: ['plot', 'land'],
     commercial: ['commercial', 'shop', 'office'],
 };
+
+function toMatches(result: OfferedUnits): ChatbotMatches {
+    return {
+        shown_at: new Date().toISOString(),
+        total: result.total,
+        portions_instead: result.portionsInstead,
+        units: result.shown.map((m) => ({
+            unit_id: m.unitId,
+            project: m.project,
+            unit_number: m.unitNumber,
+            unit_type: m.unitType,
+            beds: m.beds,
+            price: m.price,
+            has_media: m.mediaCount > 0,
+        })),
+    };
+}
 
 /** Turns a chatbot enquiry into a client and a lead the company's staff then pick up and assign. */
 @Injectable()
@@ -36,11 +57,20 @@ export class WhatsappLeadService {
     ) { }
 
     /** Must run inside the company's tenant context, so new rows are stamped with it. */
-    async save(tenantId: string, message: IncomingWhatsappText, turn: PropertyChatTurn): Promise<void> {
+    async save(
+        tenantId: string,
+        message: ChatContact,
+        turn: PropertyChatTurn,
+        offered?: OfferedUnits,
+        subSource = SUB_SOURCE,
+    ): Promise<void> {
         const enquiry = turn.parameters;
         if (!turn.lead_key || !(enquiry.purpose || enquiry.property_type || enquiry.area)) return;
 
-        const fields = await this.leadFields(tenantId, enquiry);
+        const fields = {
+            ...(await this.leadFields(tenantId, enquiry, subSource)),
+            ...(offered && { chatbot_matches: toMatches(offered) }),
+        };
         const existing = await this.leads.findOne({
             where: { tenant_id: tenantId, whatsapp_key: turn.lead_key },
             select: { id: true, stage: true },
@@ -52,7 +82,7 @@ export class WhatsappLeadService {
             return;
         }
 
-        const customer = await this.findOrCreateCustomer(tenantId, message, fields.source_id);
+        const customer = await this.findOrCreateCustomer(tenantId, message, fields.source_id, subSource);
         try {
             await this.leads.save(this.leads.create({
                 ...fields,
@@ -71,7 +101,11 @@ export class WhatsappLeadService {
         }
     }
 
-    private async leadFields(tenantId: string, enquiry: PropertyEnquiry) {
+    findByKey(tenantId: string, leadKey: string) {
+        return this.leads.findOne({ where: { tenant_id: tenantId, whatsapp_key: leadKey }, select: { id: true, chatbot_matches: true } });
+    }
+
+    private async leadFields(tenantId: string, enquiry: PropertyEnquiry, subSource: string) {
         const [interest, category, source] = await Promise.all([
             enquiry.purpose ? this.findByName(this.interests, tenantId, INTEREST_NAMES[enquiry.purpose]) : null,
             enquiry.property_type ? this.findByName(this.categories, tenantId, CATEGORY_NAMES[enquiry.property_type]) : null,
@@ -83,7 +117,7 @@ export class WhatsappLeadService {
             area: enquiry.area,
             budget: enquiry.budget != null ? String(enquiry.budget) : null,
             source_id: source?.id ?? null,
-            sub_source: SUB_SOURCE,
+            sub_source: subSource,
         };
     }
 
@@ -105,7 +139,7 @@ export class WhatsappLeadService {
             .getOne();
     }
 
-    private async findOrCreateCustomer(tenantId: string, message: IncomingWhatsappText, sourceId: string | null) {
+    private async findOrCreateCustomer(tenantId: string, message: ChatContact, sourceId: string | null, subSource: string) {
         const existing = await this.findCustomer(tenantId, message.senderId);
         if (existing) return existing;
 
@@ -115,7 +149,7 @@ export class WhatsappLeadService {
             contact_number: phone,
             country: countryFromPhone(phone),
             source_id: sourceId,
-            sub_source: SUB_SOURCE,
+            sub_source: subSource,
             created_by: null,
             assigned_to: null,
         });
